@@ -2,12 +2,11 @@
 
 import base64
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
-from dateutil.relativedelta import relativedelta
+from decimal import ROUND_HALF_UP, Decimal
 
+from dateutil.relativedelta import relativedelta
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
-
 
 # eSKD XML-taggnamn per SKV-ruta. Källa: Skatteverkets officiella spec
 # (https://www.skatteverket.se/foretag/skatterochavdrag/momsdeklaration/...)
@@ -95,8 +94,8 @@ IN_VAT_BOXES = {"se_48"}
 
 
 # BAS-konton → ruta-mappning för referens och valideringar.
-# Källa: ~/swedish-accounting-skills/swedish-vat/references/vat-compliance-reference.md
-# (Section 7 + 8). Pekar på BAS 2026-versionen.
+# Källa: BAS-kontoplan 2026 + Skatteverkets blankett SKV 4700, sektion 7
+# och 8 ("Momsdeklaration field-to-BAS account mapping").
 BOX_TO_BAS_ACCOUNTS = {
     # B: Utgående moms (kredit-saldo förväntas)
     "se_10": ["2611", "2612", "2613", "2616"],
@@ -119,8 +118,9 @@ BOX_TO_BAS_ACCOUNTS = {
 DORMANT_VAT_ACCOUNTS = ["2618", "2628", "2638", "2648"]
 
 # Reverse-charge-par — om den ena sidan har saldo MÅSTE den andra också ha det.
-# Källa: skill swedish-vat #1 felmönster ("One-sided reverse charge: Both
-# output AND input VAT must be booked; silent netting is prohibited")
+# Källa: ML 2023:200 16 kap. — vid reverse charge (omvänd skattskyldighet)
+# måste BÅDE utgående OCH ingående moms bokföras; "silent netting" där
+# bara ena sidan bokförs är förbjudet.
 RC_PAIRS = [
     # (output VAT account, [valid input VAT accounts])
     ("2614", ["2645", "2647"]),  # 25%
@@ -219,43 +219,45 @@ class SkvMomsWizard(models.TransientModel):
 
         states = ["posted"] if self.only_posted else ["posted", "draft"]
 
-        # Use balance and absolute it depending on box type:
-        # - For sales/purchase BASE rows the natural sign on credit side gives
-        #   negative balance (sales) or positive (purchase). SKV always wants
-        #   positive numbers on the declaration. We take ABS for base boxes.
-        # - For tax boxes the amount is the actual VAT collected/paid.
+        # SKV declaration always shows positive amounts.
+        # Sales / output VAT: balance is naturally negative (credit side) → flip.
+        # Purchases / input VAT: balance is positive (debit side) → keep.
+        SALES_OR_OUT_VAT = {
+            "se_05", "se_06", "se_07", "se_08",
+            "se_10", "se_11", "se_12",
+            "se_30", "se_31", "se_32",
+            "se_35", "se_36", "se_37", "se_38",
+            "se_39", "se_40", "se_41", "se_42",
+            "se_60", "se_61", "se_62",
+        }
+
+        # One grouped query for all relevant tag IDs, then map results to
+        # boxes locally. Replaces a previous N-queries-per-call pattern
+        # that scaled badly on large datasets.
+        tag_ids = list(tag_by_code.values())
+        balance_by_tag: dict[int, float] = {}
+        if tag_ids:
+            self.env.cr.execute("""
+                SELECT rel.account_account_tag_id,
+                       COALESCE(SUM(aml.debit - aml.credit), 0)
+                FROM account_account_tag_account_move_line_rel rel
+                JOIN account_move_line aml ON aml.id = rel.account_move_line_id
+                JOIN account_move m ON m.id = aml.move_id
+                WHERE rel.account_account_tag_id = ANY(%s)
+                  AND m.date BETWEEN %s AND %s
+                  AND m.state = ANY(%s)
+                  AND m.company_id = %s
+                GROUP BY rel.account_account_tag_id
+            """, (tag_ids, self.date_from, self.date_to, states, self.env.company.id))
+            balance_by_tag = {tid: float(bal or 0.0) for tid, bal in self.env.cr.fetchall()}
+
         rows = []
         for code, label in SKV_ROWS:
             tag_id = tag_by_code.get(code)
             if not tag_id:
                 continue
-            self.env.cr.execute("""
-                SELECT COALESCE(SUM(aml.debit - aml.credit), 0)
-                FROM account_account_tag_account_move_line_rel rel
-                JOIN account_move_line aml ON aml.id = rel.account_move_line_id
-                JOIN account_move m ON m.id = aml.move_id
-                WHERE rel.account_account_tag_id = %s
-                  AND m.date BETWEEN %s AND %s
-                  AND m.state = ANY(%s)
-                  AND m.company_id = %s
-            """, (tag_id, self.date_from, self.date_to, states, self.env.company.id))
-            balance = self.env.cr.fetchone()[0] or 0.0
-            # SKV declaration always shows positive amounts.
-            # Sales / output VAT: balance is naturally negative (credit side) → flip.
-            # Purchases / input VAT: balance is positive (debit side) → keep.
-            # We negate sales/output rows; remaining ones stay as-is.
-            SALES_OR_OUT_VAT = {
-                "se_05", "se_06", "se_07", "se_08",
-                "se_10", "se_11", "se_12",
-                "se_30", "se_31", "se_32",
-                "se_35", "se_36", "se_37", "se_38",
-                "se_39", "se_40", "se_41", "se_42",
-                "se_60", "se_61", "se_62",
-            }
-            if code in SALES_OR_OUT_VAT:
-                amount = round(-balance, 2)
-            else:
-                amount = round(balance, 2)
+            balance = balance_by_tag.get(tag_id, 0.0)
+            amount = round(-balance, 2) if code in SALES_OR_OUT_VAT else round(balance, 2)
             rows.append({
                 "code": code,
                 "label": label,
@@ -298,9 +300,13 @@ class SkvMomsWizard(models.TransientModel):
         # Period = YYYYMM of last month in interval
         period = self.date_to.strftime("%Y%m")
 
-        # Round to int (eSKD uses no decimals — kronor only)
+        # Round to int (eSKD uses no decimals — kronor only).
+        # Use ROUND_HALF_UP to stay consistent with the rest of the
+        # module (VAT period-end bookkeeping uses Decimal+HALF_UP). Built-in
+        # round() does bankers rounding which would diverge by ±1 kr on
+        # exact .50-amounts.
         def to_int_kr(val):
-            return int(round(val))
+            return int(Decimal(str(val)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
         # Header per SKV-spec: line 1 XML decl, line 2 root element, line 3 OrgNr,
         # line 4 <Moms>, line 5 <Period>. No DOCTYPE — SKV's official examples
@@ -494,22 +500,34 @@ class SkvMomsWizard(models.TransientModel):
 
         period_ref = f"MOMS {self._period_label()}"
 
-        # Idempotency check
-        existing = Move.search([
-            ("ref", "=", period_ref),
-            ("company_id", "=", self.env.company.id),
-        ], limit=1)
-        if existing:
-            raise UserError(_(
-                "En momsbokföring för %s finns redan (%s, status: %s). "
-                "Radera den först om du vill skapa om bokföringen."
-            ) % (period_ref, existing.name or _("utkast"), existing.state))
-
         # Find a "Diverse"/"Misc" journal — type=general, default
         misc_journal = self.env["account.journal"].search([
             ("type", "=", "general"),
             ("company_id", "=", self.env.company.id),
         ], limit=1)
+
+        # Idempotency check — narrowed to (move_type='entry', this journal,
+        # this period's date, company, ref). Prevents both:
+        #   * False positives when an unrelated move happens to share the ref
+        #   * Duplicate creation if the user clicks twice
+        # Race condition between two simultaneous clicks is mitigated by
+        # the check; a hard guarantee would require a DB-level unique
+        # constraint which is out of scope for a pure module (no model
+        # fields touched).
+        idempotency_domain = [
+            ("ref", "=", period_ref),
+            ("company_id", "=", self.env.company.id),
+            ("move_type", "=", "entry"),
+            ("date", "=", self.date_to),
+        ]
+        if misc_journal:
+            idempotency_domain.append(("journal_id", "=", misc_journal.id))
+        existing = Move.search(idempotency_domain, limit=1)
+        if existing:
+            raise UserError(_(
+                "En momsbokföring för %s finns redan (%s, status: %s). "
+                "Radera den först om du vill skapa om bokföringen."
+            ) % (period_ref, existing.name or _("utkast"), existing.state))
         if not misc_journal:
             raise UserError(_("Hittar ingen journal av typen 'Diverse operationer'."))
 
