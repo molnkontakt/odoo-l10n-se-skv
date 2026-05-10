@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="action_report_skv_moms" model="ir.actions.report">
+        <field name="name">SKV Momsrapport</field>
+        <field name="model">l10n_se_skv_vat_report.wizard</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">l10n_se_skv_vat_report.skv_moms_report_template</field>
+        <field name="report_file">l10n_se_skv_vat_report.skv_moms_report_template</field>
+        <field name="print_report_name">'SKV Momsrapport %s till %s' % (data.get('date_from',''), data.get('date_to',''))</field>
+    </record>
+
+    <template id="skv_moms_report_template">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <div class="page">
+                    <h2>SKV Momsrapport</h2>
+                    <h3 t-esc="data.get('company_name','')"/>
+                    <p>
+                        <strong>VAT:</strong> <span t-esc="data.get('company_vat','')"/><br/>
+                        <strong>Period:</strong>
+                        <span t-esc="data.get('date_from','')"/> –
+                        <span t-esc="data.get('date_to','')"/><br/>
+                        <span t-if="not data.get('only_posted')" style="color:#c33;">
+                            <strong>OBS:</strong> inkluderar utkast (ej bokförda)
+                        </span>
+                    </p>
+
+                    <div t-if="data.get('draft_count')"
+                         style="border:2px solid #c93;background:#fef5e0;padding:10px;margin:15px 0;">
+                        <strong>⚠ Varning:</strong>
+                        Det finns <strong t-esc="data.get('draft_count')"/> ej bokförda utkast
+                        i perioden som <em>inte</em> är inräknade i rapporten.
+                        Granska och bokför dem innan du lämnar in deklarationen.
+                    </div>
+
+                    <div t-if="data.get('only_posted') == False and data.get('draft_count')"
+                         style="border:2px solid #c33;background:#ffe5e5;padding:10px;margin:15px 0;">
+                        <strong>OBS:</strong> Rapporten inkluderar
+                        <strong t-esc="data.get('draft_count')"/> ej bokförda utkast.
+                        Detta är endast för granskning — siffrorna är inte slutgiltiga.
+                    </div>
+
+                    <h4>Rutor enligt momsdeklarationen</h4>
+                    <table class="table table-sm" style="border-collapse:collapse;width:100%;">
+                        <thead>
+                            <tr style="border-bottom:2px solid #000;">
+                                <th style="width:8%;">Ruta</th>
+                                <th>Beskrivning</th>
+                                <th style="width:18%;text-align:right;">Belopp (kr)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr t-foreach="data.get('rows', [])" t-as="row"
+                                t-if="row['amount']">
+                                <td><strong t-esc="row['code'][3:]"/></td>
+                                <td t-esc="row['label']"/>
+                                <td style="text-align:right;">
+                                    <span t-esc="'{:,.2f}'.format(row['amount']).replace(',', ' ').replace('.', ',')"/>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h4 style="margin-top:30px;">Sammanfattning</h4>
+                    <table class="table table-sm" style="border-collapse:collapse;width:60%;">
+                        <tr>
+                            <td>Utgående moms (rutor 10–12, 30–32, 60–62)</td>
+                            <td style="text-align:right;">
+                                <span t-esc="'{:,.2f}'.format(data.get('total_out_vat', 0)).replace(',', ' ').replace('.', ',')"/> kr
+                            </td>
+                        </tr>
+                        <tr>
+                            <td>Avdrag ingående moms (ruta 48)</td>
+                            <td style="text-align:right;">
+                                –<span t-esc="'{:,.2f}'.format(data.get('total_in_vat', 0)).replace(',', ' ').replace('.', ',')"/> kr
+                            </td>
+                        </tr>
+                        <tr style="border-top:2px solid #000;font-weight:bold;">
+                            <td>Att betala till Skatteverket</td>
+                            <td style="text-align:right;">
+                                <span t-esc="'{:,.2f}'.format(data.get('to_pay', 0)).replace(',', ' ').replace('.', ',')"/> kr
+                            </td>
+                        </tr>
+                    </table>
+
+                    <p style="margin-top:40px;font-size:9px;color:#888;">
+                        Rapporten summerar tax_tag_ids på posted journalrader för den valda perioden.
+                        Inkluderar både Odoo-skapade fakturor och direkt-taggade journal entries
+                        (t.ex. SIE-importer från andra bokföringssystem).
+                    </p>
+                </div>
+            </t>
+        </t>
+    </template>
+</odoo>

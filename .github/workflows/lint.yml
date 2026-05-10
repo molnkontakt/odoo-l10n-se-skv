@@ -1,0 +1,53 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install ruff
+      - name: Run ruff
+        run: ruff check .
+
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Compile-check all Python files
+        run: |
+          python -m compileall -q l10n_se_skv_vat_report/
+
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Validate __manifest__.py
+        run: |
+          python -c "
+          import ast
+          m = ast.literal_eval(open('l10n_se_skv_vat_report/__manifest__.py').read())
+          assert m['name'], 'name required'
+          assert m['version'].startswith('19.'), f'version must target Odoo 19, got {m[\"version\"]}'
+          assert 'l10n_se' in m['depends'], 'l10n_se must be a hard dependency'
+          assert m['license'] == 'LGPL-3', 'license must be LGPL-3'
+          print('manifest OK:', m['name'], m['version'])
+          "

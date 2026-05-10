@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_skv_moms_wizard_form" model="ir.ui.view">
+        <field name="name">l10n_se_skv_vat_report.wizard.form</field>
+        <field name="model">l10n_se_skv_vat_report.wizard</field>
+        <field name="arch" type="xml">
+            <form string="SKV Momsrapport">
+                <field name="draft_warning" nolabel="1" readonly="1"
+                       invisible="not draft_warning"/>
+                <field name="compliance_warnings" nolabel="1" readonly="1"
+                       invisible="not compliance_warnings"/>
+                <group>
+                    <group string="Period">
+                        <field name="period_type" widget="radio"/>
+                        <field name="year"/>
+                        <field name="quarter" invisible="period_type != 'quarter'"/>
+                        <field name="month" invisible="period_type != 'month'"/>
+                        <field name="date_from" invisible="period_type != 'custom'"
+                               required="period_type == 'custom'"/>
+                        <field name="date_to" invisible="period_type != 'custom'"
+                               required="period_type == 'custom'"/>
+                    </group>
+                    <group string="Inställningar">
+                        <field name="only_posted"/>
+                    </group>
+                </group>
+                <group invisible="not result_html">
+                    <field name="result_html" nolabel="1" colspan="2"/>
+                </group>
+                <footer>
+                    <button name="action_view_in_browser" type="object"
+                            string="Visa i webbläsare" class="btn-secondary"/>
+                    <button name="action_view_details" type="object"
+                            string="Visa detaljer" class="btn-secondary"
+                            help="Lista alla verifikatrader som bidragit till rapporten, grupperade per SKV-ruta"/>
+                    <button name="action_view_report" type="object"
+                            string="Skriv ut PDF" class="btn-primary"/>
+                    <button name="action_export_eskd" type="object"
+                            string="Exportera eSKD-fil" class="btn-primary"
+                            help="Genererar XML-fil enligt Skatteverkets eSKDUpload DTD 6.0 — laddas upp på skatteverket.se"/>
+                    <button name="action_create_vat_journal_entry" type="object"
+                            string="Skapa momsbokföring" class="btn-primary"
+                            help="Skapar utkast som nollställer alla momskonton mot 2650 Redovisningskonto för moms (öresavrundning på 3740)"/>
+                    <button special="cancel" string="Avbryt"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_skv_moms_wizard" model="ir.actions.act_window">
+        <field name="name">SKV Momsrapport</field>
+        <field name="res_model">l10n_se_skv_vat_report.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <menuitem id="menu_skv_section"
+              name="Skatteverket"
+              parent="account.menu_finance_reports"
+              sequence="20"/>
+
+    <menuitem id="menu_skv_moms_wizard"
+              name="Momsrapport"
+              parent="menu_skv_section"
+              action="action_skv_moms_wizard"
+              sequence="10"/>
+
+</odoo>
