@@ -53,8 +53,10 @@ License: LGPL-3.
     "depends": ["account", "l10n_se"],
     "data": [
         "security/ir.model.access.csv",
-        "views/skv_filing_views.xml",
+        # skv_moms_views.xml first — defines parent menu menu_skv_section
+        # that skv_filing_views.xml hangs its submenu under.
         "views/skv_moms_views.xml",
+        "views/skv_filing_views.xml",
         "reports/skv_moms_report.xml",
     ],
     "installable": True,
