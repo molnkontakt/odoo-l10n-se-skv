@@ -712,8 +712,20 @@ class SkvMomsWizard(models.TransientModel):
             "company_id": self.env.company.id,
         })
 
-        # Open the filing — from there the user can view the journal entry,
-        # export eSKD, or unfile.
+        # Auto-generate the eSKD file from the frozen values immediately —
+        # "lämna in" means the eSKD upload to Skatteverket is the deliverable,
+        # so the file should be ready to download on the filing form without
+        # needing to re-open the wizard.
+        xml_bytes = self._build_eskd_xml(rows, to_pay)
+        filename = (f"{self.date_from.strftime('%Y%m%d')}"
+                    f"-{self.date_to.strftime('%Y%m%d')}.eskd")
+        filing.write({
+            "eskd_data": base64.b64encode(xml_bytes),
+            "eskd_filename": filename,
+        })
+
+        # Open the filing — from there the user can download eSKD, view the
+        # journal entry, or unfile.
         return {
             "type": "ir.actions.act_window",
             "name": _("Momsinlämning %s") % self._period_label(),

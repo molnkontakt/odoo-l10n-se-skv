@@ -235,6 +235,21 @@ class SkvFiling(models.Model):
             "target": "current",
         }
 
+    def action_download_eskd(self):
+        """Trigger eSKD file download via the standard /web/content URL."""
+        self.ensure_one()
+        if not self.eskd_data:
+            raise UserError(_(
+                "Ingen eSKD-fil finns på denna inlämning. Ångra och boka "
+                "om perioden för att generera filen på nytt."
+            ))
+        return {
+            "type": "ir.actions.act_url",
+            "url": (f"/web/content/l10n_se_skv_vat_report.filing/{self.id}"
+                    f"/eskd_data?filename_field=eskd_filename&download=true"),
+            "target": "self",
+        }
+
     def action_view_drift_details(self):
         """Open the move-lines that drove the drift, scoped to this filing's period."""
         self.ensure_one()
