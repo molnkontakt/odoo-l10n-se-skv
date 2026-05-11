@@ -140,6 +140,7 @@ class SkvMomsWizard(models.TransientModel):
     _description = "SKV Momsrapport — period-väljare"
 
     period_type = fields.Selection([
+        ("year", "År"),
         ("quarter", "Kvartal"),
         ("month", "Månad"),
         ("custom", "Eget intervall"),
@@ -192,7 +193,10 @@ class SkvMomsWizard(models.TransientModel):
         if not self.year:
             return
         year_int = int(self.year)
-        if self.period_type == "quarter" and self.quarter:
+        if self.period_type == "year":
+            self.date_from = date(year_int, 1, 1)
+            self.date_to = date(year_int, 12, 31)
+        elif self.period_type == "quarter" and self.quarter:
             q = int(self.quarter)
             start_month = (q - 1) * 3 + 1
             self.date_from = date(year_int, start_month, 1)
@@ -477,7 +481,9 @@ class SkvMomsWizard(models.TransientModel):
         }
 
     def _period_label(self):
-        """Human label like '2026 Q1' or '2026-03' for ref-fältet."""
+        """Human label like '2026 Q1', '2026-03', or '2026' for ref-fältet."""
+        if self.period_type == "year":
+            return f"{self.year}"
         if self.period_type == "quarter" and self.quarter:
             return f"{self.year} Q{self.quarter}"
         if self.period_type == "month" and self.month:
@@ -855,6 +861,16 @@ class SkvMomsWizard(models.TransientModel):
         help="True om någon tidigare inlämnad period har drivit (= nya verifikat "
              "med moms efter inlämning). Blockerar eSKD-export och bokning.",
     )
+    overlapping_filings_html = fields.Html(
+        string="Överlappande inlämningar",
+        compute="_compute_overlapping_filings_html",
+    )
+    has_overlapping_filing = fields.Boolean(
+        compute="_compute_overlapping_filings_html",
+        help="True om vald period delvis eller helt täcks av en redan inlämnad "
+             "period med annan periodlängd (t.ex. månad inom inlämnat kvartal). "
+             "Blockerar export/bokning.",
+    )
     cancel_reason = fields.Text(string="Anledning till ångrande")
 
     @api.depends("date_from", "date_to")
@@ -959,10 +975,61 @@ class SkvMomsWizard(models.TransientModel):
                 'fortsätta.<ul style="margin:8px 0 0 0;">{items}</ul></div>'
             ).format(items=Markup("").join(items))
 
+    @api.depends("date_from", "date_to")
+    def _compute_overlapping_filings_html(self):
+        Filing = self.env["l10n_se_skv_vat_report.filing"]
+        for w in self:
+            w.has_overlapping_filing = False
+            w.overlapping_filings_html = False
+            if not w.date_from or not w.date_to:
+                continue
+            overlapping = Filing.find_overlapping_filings(
+                w.date_from, w.date_to, w.env.company.id)
+            if not overlapping:
+                continue
+            w.has_overlapping_filing = True
+            items = []
+            for f in overlapping:
+                items.append(Markup(
+                    '<li><strong>MOMS {label}</strong> ({start} – {end})</li>'
+                ).format(
+                    label=escape(f.period_label or ""),
+                    start=escape(str(f.period_start)),
+                    end=escape(str(f.period_end)),
+                ))
+            w.overlapping_filings_html = Markup(
+                '<div class="alert alert-danger" style="margin:0;">'
+                '<strong>⛔ Vald period överlappar redan inlämnade '
+                'perioder</strong><br/>'
+                'Följande inlämning(ar) täcker helt eller delvis '
+                'intervallet {date_from} – {date_to}:<ul style="margin:8px 0 0 0;">'
+                '{items}</ul>'
+                'Välj antingen exakt samma period som inlämningen (då kan '
+                'du ångra den), eller en period som inte överlappar.'
+                '</div>'
+            ).format(
+                date_from=escape(str(w.date_from)),
+                date_to=escape(str(w.date_to)),
+                items=Markup("").join(items),
+            )
+
     def _block_if_stale(self):
-        """Raise UserError if there are drifted prior filings."""
+        """Raise UserError if there are drifted prior filings or overlapping
+        filings (period partially/fully covered by another active filing).
+        """
         self.ensure_one()
         Filing = self.env["l10n_se_skv_vat_report.filing"]
+
+        overlap = Filing.find_overlapping_filings(
+            self.date_from, self.date_to, self.env.company.id)
+        if overlap:
+            labels = ", ".join(overlap.mapped("period_label"))
+            raise UserError(_(
+                "Vald period (%s – %s) överlappar redan inlämnade perioder: "
+                "%s. Välj en period som inte överlappar, eller ångra den "
+                "inlämningen först."
+            ) % (self.date_from, self.date_to, labels))
+
         stale = Filing.find_stale_prior_filings(
             self.date_from, self.env.company.id)
         if stale:

@@ -140,6 +140,34 @@ class SkvFiling(models.Model):
         ], limit=1)
 
     @api.model
+    def find_overlapping_filings(self, date_from, date_to, company_id=None,
+                                 exclude_exact=True):
+        """Return active filings whose period overlaps the given range.
+
+        Used to catch cases like: Q1 is filed, user opens the wizard with
+        period_type=month and picks February — the wizard would otherwise
+        miss that February is already covered by the Q1 filing.
+
+        exclude_exact=True (default) skips a filing whose period matches
+        exactly — that case is handled by find_filed_for_period and shown
+        as the "Period redan inlämnad" banner instead.
+        """
+        company_id = company_id or self.env.company.id
+        domain = [
+            ("company_id", "=", company_id),
+            ("state", "=", "filed"),
+            ("period_start", "<=", date_to),
+            ("period_end", ">=", date_from),
+        ]
+        filings = self.search(domain)
+        if exclude_exact:
+            filings = filings.filtered(
+                lambda f: not (f.period_start == date_from
+                               and f.period_end == date_to)
+            )
+        return filings
+
+    @api.model
     def find_stale_prior_filings(self, before_date, company_id=None):
         """Return filings with period_end < before_date that have drifted from
         their frozen box-amounts (= new/changed VAT moves since filing).
