@@ -10,3 +10,10 @@ ignore = ["E501"]
 # Odoo manifest files are standalone dicts by convention; B018 (useless
 # expression) doesn't apply.
 "**/__manifest__.py" = ["B018"]
+
+[tool.ruff.lint.isort]
+# Odoo modules conventionally put `odoo` and `odoo.exceptions` imports in
+# a separate block after stdlib + third-party. Marking odoo as first-party
+# makes ruff/isort enforce that grouping rather than collapsing everything
+# into a single third-party block.
+known-first-party = ["odoo"]
