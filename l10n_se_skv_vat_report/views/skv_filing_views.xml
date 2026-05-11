@@ -99,7 +99,7 @@
                         domain="[('state','=','filed')]"/>
                 <filter name="filter_cancelled" string="Ångrade"
                         domain="[('state','=','cancelled')]"/>
-                <group expand="0" string="Gruppera efter">
+                <group>
                     <filter name="group_state" string="Status"
                             context="{'group_by':'state'}"/>
                     <filter name="group_year" string="År"
