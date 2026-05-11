@@ -14,9 +14,15 @@ flyttar de nya verifikaten till en öppen period.
 """
 
 import json
+from decimal import ROUND_HALF_UP, Decimal
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
+
+# Tolerance for drift detection: 0.50 kr per box. eSKD rounds to whole
+# kronor anyway, so sub-krona deltas (öres) are not material.
+DRIFT_TOLERANCE = Decimal("0.50")
+TWO = Decimal("0.01")
 
 
 class SkvFiling(models.Model):
@@ -79,13 +85,21 @@ class SkvFiling(models.Model):
                                        help="Skapas vid ångrande av posted "
                                             "verifikat (account.move._reverse_moves).")
 
-    _sql_constraints = [
-        ("uniq_filed_period_per_company",
-         "EXCLUDE (company_id WITH =, period_start WITH =, period_end WITH =) "
-         "WHERE (state = 'filed')",
-         "Det finns redan en aktiv (state=filed) inlämning för samma period i "
-         "detta bolag. Ångra den först om du vill skapa en ny."),
-    ]
+    # Note: no _sql_constraints — we use a partial unique INDEX created in
+    # init() instead. Constraints with WHERE-clauses require either
+    # EXCLUDE (which needs btree_gist extension) or a partial UNIQUE INDEX
+    # (vanilla PostgreSQL). Partial index is simpler and portable.
+
+    def init(self):
+        # One ACTIVE filing per (company, period). Cancelled filings are
+        # excluded so a period can be unfiled and re-filed any number of
+        # times, but only one filing can be active at a time.
+        self.env.cr.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS
+                l10n_se_skv_filing_uniq_filed_period
+            ON l10n_se_skv_vat_report_filing (company_id, period_start, period_end)
+            WHERE state = 'filed'
+        """)
 
     @api.depends("period_label", "state", "filed_at")
     def _compute_display_name(self):
@@ -97,11 +111,19 @@ class SkvFiling(models.Model):
     # ------------------------------------------------------------------
 
     def get_box_amounts(self) -> dict:
-        """Return the frozen box-amounts as a {code: float} dict."""
+        """Return the frozen box-amounts as a {code: Decimal} dict.
+
+        Snapshots are stored as JSON strings for bit-exact round-trip
+        (avoids float-precision drift). Callers that need a float (PDF
+        rendering, eSKD int-rounding) can cast at the use site.
+        """
         self.ensure_one()
         if not self.box_amounts_json:
             return {}
-        return {k: float(v) for k, v in json.loads(self.box_amounts_json).items()}
+        return {
+            k: Decimal(str(v)).quantize(TWO, rounding=ROUND_HALF_UP)
+            for k, v in json.loads(self.box_amounts_json).items()
+        }
 
     @api.model
     def find_filed_for_period(self, date_from, date_to, company_id=None):
@@ -117,7 +139,14 @@ class SkvFiling(models.Model):
     @api.model
     def find_stale_prior_filings(self, before_date, company_id=None):
         """Return filings with period_end < before_date that have drifted from
-        their frozen box-amounts (= new/changed VAT moves since filing)."""
+        their frozen box-amounts (= new/changed VAT moves since filing).
+
+        TODO(perf): runs full _compute_box_amounts() per candidate, so cost
+        is O(n_filings) on every wizard open. For typical SE companies
+        (~4 quarters/year × a few years) n is small. If this becomes hot:
+        cache an aml.write_date watermark per filing and only recompute
+        when something newer than the watermark touched the period.
+        """
         company_id = company_id or self.env.company.id
         candidates = self.search([
             ("company_id", "=", company_id),
@@ -134,30 +163,36 @@ class SkvFiling(models.Model):
         """Recompute the box-amounts NOW for this filing's period (posted only).
 
         Used by stale-detection — compares the current saldo against the
-        frozen snapshot.
+        frozen snapshot. Runs in the filing's company context so multi-company
+        setups don't mix balances from sibling companies.
         """
         self.ensure_one()
         # Reuse the wizard's computation by instantiating a transient one.
-        wizard = self.env["l10n_se_skv_vat_report.wizard"].new({
+        # with_company swaps env.company so _compute_box_amounts() uses the
+        # filing's company even if env.company differs (multi-company users).
+        wizard = self.env["l10n_se_skv_vat_report.wizard"].with_company(
+            self.company_id
+        ).new({
             "date_from": self.period_start,
             "date_to": self.period_end,
             "only_posted": True,
         })
         rows, _out, _in, _pay = wizard._compute_box_amounts()
-        return {r["code"]: float(r["amount"]) for r in rows}
+        return {
+            r["code"]: Decimal(str(r["amount"])).quantize(TWO, rounding=ROUND_HALF_UP)
+            for r in rows
+        }
 
     def _has_drifted(self) -> bool:
-        """True if current saldo differs from the frozen snapshot.
-
-        Uses 0.5 kr tolerance per box (eSKD rounds to whole kronor; ören-
-        diffs are not material for re-filing).
+        """True if current saldo differs from the frozen snapshot beyond
+        DRIFT_TOLERANCE per box. Decimal-only comparison — no float noise.
         """
         self.ensure_one()
         frozen = self.get_box_amounts()
         current = self._current_box_amounts()
-        all_codes = set(frozen) | set(current)
-        for code in all_codes:
-            if abs(frozen.get(code, 0.0) - current.get(code, 0.0)) >= 0.50:
+        zero = Decimal("0")
+        for code in set(frozen) | set(current):
+            if abs(frozen.get(code, zero) - current.get(code, zero)) >= DRIFT_TOLERANCE:
                 return True
         return False
 
@@ -166,13 +201,13 @@ class SkvFiling(models.Model):
         self.ensure_one()
         frozen = self.get_box_amounts()
         current = self._current_box_amounts()
-        all_codes = sorted(set(frozen) | set(current))
+        zero = Decimal("0")
         details = []
-        for code in all_codes:
-            f = frozen.get(code, 0.0)
-            c = current.get(code, 0.0)
+        for code in sorted(set(frozen) | set(current)):
+            f = frozen.get(code, zero)
+            c = current.get(code, zero)
             diff = c - f
-            if abs(diff) >= 0.50:
+            if abs(diff) >= DRIFT_TOLERANCE:
                 details.append({
                     "code": code,
                     "frozen": f,
@@ -251,7 +286,10 @@ class SkvFiling(models.Model):
                 # Post the reversal so it actually offsets the original
                 reversal.action_post()
             elif move.state == "draft":
-                # Draft entries can be unlinked outright
+                # Draft entries can be unlinked outright. Must null
+                # journal_entry_id first because the FK is ondelete=restrict
+                # (we never want a posted move silently disappearing).
+                self.journal_entry_id = False
                 move.unlink()
             # else: cancelled/already gone — leave as-is
 

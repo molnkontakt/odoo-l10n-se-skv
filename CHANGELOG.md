@@ -8,6 +8,34 @@ versioning scheme.
 
 ## [Unreleased]
 
+## [19.0.2.0.1] — 2026-05-11
+
+### Fixed (review feedback from PR #2)
+
+- **Filing creation no longer fails for invoice users** — ACL grants
+  `account.group_account_invoice` create+write on filing (delete still
+  manager-only).
+- **Replaced `EXCLUDE` constraint with partial UNIQUE INDEX** — works on
+  vanilla PostgreSQL without the `btree_gist` extension.
+- **Drafts can be unfiled cleanly** — null `journal_entry_id` before
+  unlinking the draft move so the `ondelete='restrict'` FK doesn't
+  block the cancellation.
+- **Booking always uses posted moves** — wizard auto-enables
+  `only_posted` before creating the journal entry, so the filing
+  snapshot can never include drafts that aren't on 2650.
+- **Decimal-quantized box amounts** — `box_amounts_json` now stores
+  Decimal-quantized strings instead of floats, eliminating
+  representation noise in stale-detection.
+- **Multi-company drift checks** — `_current_box_amounts` runs in
+  `with_company(filing.company_id)` so balances are never mixed across
+  companies.
+- **HTML escaping in wizard banners** — `period_label`, `filed_by.name`,
+  and other interpolated values are escaped via `markupsafe`. Prevents
+  potential XSS via maliciously-named users.
+- **Sanitized exception path** — full traceback logged server-side via
+  `_logger.exception`, banner shows a generic message instead of the
+  raw exception text.
+
 ## [19.0.2.0.0] — 2026-05-11
 
 ### Added
@@ -55,6 +83,7 @@ versioning scheme.
   avoids the 2 % surcharge.
 
 [19.0.2.0.0]: https://github.com/molnkontakt/odoo-l10n-se-skv/releases/tag/v19.0.2.0.0
+[19.0.2.0.1]: https://github.com/molnkontakt/odoo-l10n-se-skv/releases/tag/v19.0.2.0.1
 
 ## [19.0.1.0.0] — 2026-05-10
 

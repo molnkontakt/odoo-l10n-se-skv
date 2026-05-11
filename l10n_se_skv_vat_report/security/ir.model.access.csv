@@ -1,5 +1,5 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
 access_skv_vat_wizard,skv.vat.wizard,model_l10n_se_skv_vat_report_wizard,account.group_account_invoice,1,1,1,1
 access_skv_vat_wizard_mgr,skv.vat.wizard.mgr,model_l10n_se_skv_vat_report_wizard,account.group_account_manager,1,1,1,1
-access_skv_filing_user,skv.filing.user,model_l10n_se_skv_vat_report_filing,account.group_account_invoice,1,0,0,0
+access_skv_filing_user,skv.filing.user,model_l10n_se_skv_vat_report_filing,account.group_account_invoice,1,1,1,0
 access_skv_filing_mgr,skv.filing.mgr,model_l10n_se_skv_vat_report_filing,account.group_account_manager,1,1,1,1

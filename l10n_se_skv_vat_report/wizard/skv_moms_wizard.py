@@ -2,12 +2,17 @@
 
 import base64
 import json
+import logging
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
 from dateutil.relativedelta import relativedelta
+from markupsafe import Markup, escape
+
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
+
+_logger = logging.getLogger(__name__)
 
 # eSKD XML-taggnamn per SKV-ruta. Källa: Skatteverkets officiella spec
 # (https://www.skatteverket.se/foretag/skatterochavdrag/momsdeklaration/...)
@@ -505,6 +510,13 @@ class SkvMomsWizard(models.TransientModel):
                 "först om du vill boka om."
             ) % self.filing_id.display_name)
 
+        # Booking always uses POSTED moves only (we close 2611-264x balances
+        # to 2650 — drafts are not on those balances yet). If the user has
+        # toggled only_posted=False for preview purposes, re-enable it for
+        # the actual booking so the filing snapshot matches what's on 2650.
+        if not self.only_posted:
+            self.only_posted = True
+
         Move = self.env["account.move"]
         Account = self.env["account.account"]
         Filing = self.env["l10n_se_skv_vat_report.filing"]
@@ -677,8 +689,16 @@ class SkvMomsWizard(models.TransientModel):
         # Compute and freeze the box-amounts for this period — these are
         # the values eSKD will report (and what stale-detection compares
         # against in future periods).
+        #
+        # Store as Decimal-quantized strings (not floats) so the JSON
+        # snapshot is bit-exact and stale-detection doesn't trigger on
+        # float representation noise (e.g. 12345.67 → 12345.6700000001).
         rows, total_out, total_in, to_pay = self._compute_box_amounts()
-        box_amounts = {r["code"]: float(r["amount"]) for r in rows}
+        TWO = Decimal("0.01")
+        box_amounts = {
+            r["code"]: str(Decimal(str(r["amount"])).quantize(TWO, rounding=ROUND_HALF_UP))
+            for r in rows
+        }
 
         filing = Filing.create({
             "period_start": self.date_from,
@@ -729,8 +749,11 @@ class SkvMomsWizard(models.TransientModel):
         # Stale-detection above ensures these still match reality; reading
         # from the filing guarantees the eSKD download exactly matches the
         # bokning, even if a re-export happens later.
+        # get_box_amounts() returns Decimal — _build_eskd_xml's to_int_kr()
+        # uses Decimal(str(val)) internally so we can pass either type.
         frozen = self.filing_id.get_box_amounts()
-        rows = [{"code": code, "amount": frozen.get(code, 0.0),
+        zero = Decimal("0")
+        rows = [{"code": code, "amount": frozen.get(code, zero),
                  "label": label} for code, label in SKV_ROWS]
         xml_bytes = self._build_eskd_xml(rows, self.filing_id.to_pay)
         filename = f"{self.date_from.strftime('%Y%m%d')}-{self.date_to.strftime('%Y%m%d')}.eskd"
@@ -841,17 +864,24 @@ class SkvMomsWizard(models.TransientModel):
             f = w.filing_id
             filed_str = fields.Datetime.context_timestamp(
                 w, f.filed_at).strftime("%Y-%m-%d %H:%M")
-            html = (
-                f'<div class="alert alert-info" style="margin:0;">'
-                f'<strong>📄 Period redan inlämnad</strong><br/>'
-                f'MOMS {f.period_label} bokad och eSKD-exporterad '
-                f'{filed_str} av {f.filed_by.name}.<br/>'
-                f'Att betala SKV: <strong>{f.to_pay:,.2f} kr</strong>. '
-                f'För att ändra: ångra inlämningen först (knapp nedan), '
-                f'sedan kan du generera om rapporten.'
-                f'</div>'
+            # Escape user-controlled strings (period_label is ours, but
+            # filed_by.name could be anything). Use Markup for the static
+            # template so escape() is applied to interpolated values only.
+            w.filing_status_html = Markup(
+                '<div class="alert alert-info" style="margin:0;">'
+                '<strong>📄 Period redan inlämnad</strong><br/>'
+                'MOMS {label} bokad och eSKD-exporterad {filed_at} '
+                'av {user}.<br/>'
+                'Att betala SKV: <strong>{amount} kr</strong>. '
+                'För att ändra: ångra inlämningen först (knapp nedan), '
+                'sedan kan du generera om rapporten.'
+                '</div>'
+            ).format(
+                label=escape(f.period_label or ""),
+                filed_at=escape(filed_str),
+                user=escape(f.filed_by.name or ""),
+                amount=escape(f"{f.to_pay:,.2f}"),
             )
-            w.filing_status_html = html
 
     @api.depends("date_from", "date_to")
     def _compute_stale_filings_html(self):
@@ -864,39 +894,56 @@ class SkvMomsWizard(models.TransientModel):
             try:
                 stale = Filing.find_stale_prior_filings(
                     w.date_from, w.env.company.id)
-            except Exception as e:
-                w.stale_filings_html = (
-                    f'<div class="alert alert-info">Kunde inte kontrollera '
-                    f'tidigare inlämningar: {e}</div>'
+            except Exception:
+                # Log full traceback server-side; show a generic message
+                # in the UI to avoid leaking internal info via the banner.
+                _logger.exception(
+                    "Stale-filing check failed for wizard period %s",
+                    w.date_from)
+                w.stale_filings_html = Markup(
+                    '<div class="alert alert-info">Kunde inte kontrollera '
+                    'tidigare inlämningar — se serverloggar för detaljer.'
+                    '</div>'
                 )
                 continue
             if not stale:
                 continue
             w.has_stale_prior = True
-            parts = ['<div class="alert alert-danger" style="margin:0;">']
-            parts.append(
+            # Build the inner <li>-list safely: every interpolated value
+            # goes through escape(), summary string is concatenated as
+            # Markup for the static delimiters.
+            items = []
+            for f in stale:
+                drift = f.get_drift_details()
+                # Each diff piece is built from internal data (code, diff
+                # number) — still escape defensively.
+                diff_pieces = [
+                    escape(f"{d['code'][3:]}: {d['diff']:+,.0f} kr")
+                    for d in drift[:4]
+                ]
+                if len(drift) > 4:
+                    diff_pieces.append(escape(f"+{len(drift) - 4} till"))
+                diff_summary = Markup(", ").join(diff_pieces)
+                filed_str = fields.Datetime.context_timestamp(
+                    w, f.filed_at).strftime("%Y-%m-%d")
+                items.append(Markup(
+                    '<li><strong>MOMS {label}</strong> '
+                    '(inlämnad {filed_at}): {diff}</li>'
+                ).format(
+                    label=escape(f.period_label or ""),
+                    filed_at=escape(filed_str),
+                    diff=diff_summary,
+                ))
+            w.stale_filings_html = Markup(
+                '<div class="alert alert-danger" style="margin:0;">'
                 '<strong>⛔ Det finns ändringar i tidigare inlämnade '
                 'perioder</strong><br/>'
                 'Nya eller ändrade momsverifikat har dykt upp i perioder '
                 'som redan är bokförda och rapporterade till SKV. Du måste '
                 'antingen ångra dessa inlämningar och göra om dem, eller '
                 'flytta verifikaten till en öppen period innan du kan '
-                'fortsätta.<ul style="margin:8px 0 0 0;">'
-            )
-            for f in stale:
-                drift = f.get_drift_details()
-                diff_summary = ", ".join(
-                    f"{d['code'][3:]}: {d['diff']:+,.0f} kr" for d in drift[:4]
-                )
-                if len(drift) > 4:
-                    diff_summary += f", +{len(drift) - 4} till"
-                parts.append(
-                    f'<li><strong>MOMS {f.period_label}</strong> '
-                    f'(inlämnad {fields.Datetime.context_timestamp(w, f.filed_at).strftime("%Y-%m-%d")}): '
-                    f'{diff_summary}</li>'
-                )
-            parts.append('</ul></div>')
-            w.stale_filings_html = "".join(parts)
+                'fortsätta.<ul style="margin:8px 0 0 0;">{items}</ul></div>'
+            ).format(items=Markup("").join(items))
 
     def _block_if_stale(self):
         """Raise UserError if there are drifted prior filings."""
