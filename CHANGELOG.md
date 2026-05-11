@@ -8,6 +8,38 @@ versioning scheme.
 
 ## [Unreleased]
 
+## [19.0.2.1.0] — 2026-05-11
+
+### Added
+
+- **Yearly reporting period** — wizard supports `period_type=year` for
+  businesses with beskattningsunderlag ≤ 1M SEK that report annually
+  (SFL 26 kap §11). Defaults to previous year, spans Jan 1 – Dec 31.
+- **Overlap detection** — if the selected period partially or fully
+  overlaps a filed period (e.g. February selected when Q1 is already
+  filed), a red banner lists the conflicting filings and blocks
+  export/booking. Catches the previously missed case where
+  `period_type=month` allowed booking inside a filed quarter.
+
+### Changed (UX)
+
+- **eSKD generated automatically at filing** — the file is created
+  inside `action_create_vat_journal_entry` from the frozen values, so
+  it is ready to download from the filing form without re-opening the
+  wizard. The wizard's eSKD button is now labelled "Regenerera
+  eSKD-fil" and clearly marked as a fallback.
+- **Filing form header** has a "Hämta eSKD-fil" primary action;
+  body has a prominent "eSKD-fil att skicka till Skatteverket"
+  section with an inline link to skatteverket.se upload.
+
+### Fixed (install-time errors caught during deploy)
+
+- Removed invalid `expand` and `string` attributes from `<group>`
+  inside `<search>` — Odoo 19 RNG validation rejects them.
+- Manifest data-list reordered so `skv_moms_views.xml` (defines parent
+  menu `menu_skv_section`) is loaded before `skv_filing_views.xml`
+  (which hangs a submenu under it).
+
 ## [19.0.2.0.1] — 2026-05-11
 
 ### Fixed (review feedback from PR #2)
@@ -84,6 +116,7 @@ versioning scheme.
 
 [19.0.2.0.0]: https://github.com/molnkontakt/odoo-l10n-se-skv/releases/tag/v19.0.2.0.0
 [19.0.2.0.1]: https://github.com/molnkontakt/odoo-l10n-se-skv/releases/tag/v19.0.2.0.1
+[19.0.2.1.0]: https://github.com/molnkontakt/odoo-l10n-se-skv/releases/tag/v19.0.2.1.0
 
 ## [19.0.1.0.0] — 2026-05-10
 
