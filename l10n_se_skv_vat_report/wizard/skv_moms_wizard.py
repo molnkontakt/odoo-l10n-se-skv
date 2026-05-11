@@ -8,7 +8,6 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from dateutil.relativedelta import relativedelta
 from markupsafe import Markup, escape
-
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 
