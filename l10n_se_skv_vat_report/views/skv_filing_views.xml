@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_skv_filing_list" model="ir.ui.view">
+        <field name="name">l10n_se_skv_vat_report.filing.list</field>
+        <field name="model">l10n_se_skv_vat_report.filing</field>
+        <field name="arch" type="xml">
+            <list string="SKV Momsinlämningar"
+                  decoration-muted="state == 'cancelled'"
+                  decoration-success="state == 'filed'">
+                <field name="period_label"/>
+                <field name="period_start"/>
+                <field name="period_end"/>
+                <field name="filed_at"/>
+                <field name="filed_by"/>
+                <field name="total_out_vat" sum="Utg. moms"/>
+                <field name="total_in_vat" sum="Ing. moms"/>
+                <field name="to_pay" sum="Att betala"/>
+                <field name="state"/>
+                <field name="company_id" groups="base.group_multi_company"/>
+                <field name="currency_id" column_invisible="1"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_skv_filing_form" model="ir.ui.view">
+        <field name="name">l10n_se_skv_vat_report.filing.form</field>
+        <field name="model">l10n_se_skv_vat_report.filing</field>
+        <field name="arch" type="xml">
+            <form string="SKV Momsinlämning">
+                <header>
+                    <button name="action_unfile" type="object"
+                            string="Ångra inlämning"
+                            class="btn-danger"
+                            invisible="state != 'filed'"
+                            confirm="Är du säker? Detta reverserar momsverifikatet och låter dig boka om perioden. Använd bara om något är fel i den inlämnade rapporten."/>
+                    <button name="action_view_journal_entry" type="object"
+                            string="Visa momsverifikat"
+                            class="btn-secondary"
+                            invisible="not journal_entry_id"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="filed,cancelled"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1>
+                            <field name="display_name" readonly="1"/>
+                        </h1>
+                    </div>
+                    <group>
+                        <group string="Period">
+                            <field name="period_label"/>
+                            <field name="period_start"/>
+                            <field name="period_end"/>
+                        </group>
+                        <group string="Inlämning">
+                            <field name="filed_at"/>
+                            <field name="filed_by"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                        </group>
+                    </group>
+                    <group string="Beräknat (frusna värden)">
+                        <group>
+                            <field name="total_out_vat"/>
+                            <field name="total_in_vat"/>
+                            <field name="to_pay"/>
+                            <field name="currency_id" invisible="1"/>
+                        </group>
+                        <group>
+                            <field name="journal_entry_id"/>
+                            <field name="eskd_filename" invisible="not eskd_data"/>
+                            <field name="eskd_data" filename="eskd_filename"
+                                   invisible="not eskd_data"/>
+                        </group>
+                    </group>
+                    <group string="Ångrande" invisible="state != 'cancelled'">
+                        <group>
+                            <field name="cancelled_at"/>
+                            <field name="cancelled_by"/>
+                        </group>
+                        <group>
+                            <field name="reversal_move_id"/>
+                        </group>
+                        <field name="cancel_reason" colspan="2"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_skv_filing_search" model="ir.ui.view">
+        <field name="name">l10n_se_skv_vat_report.filing.search</field>
+        <field name="model">l10n_se_skv_vat_report.filing</field>
+        <field name="arch" type="xml">
+            <search string="SKV Momsinlämningar">
+                <field name="period_label"/>
+                <field name="filed_by"/>
+                <filter name="filter_filed" string="Inlämnade"
+                        domain="[('state','=','filed')]"/>
+                <filter name="filter_cancelled" string="Ångrade"
+                        domain="[('state','=','cancelled')]"/>
+                <group expand="0" string="Gruppera efter">
+                    <filter name="group_state" string="Status"
+                            context="{'group_by':'state'}"/>
+                    <filter name="group_year" string="År"
+                            context="{'group_by':'period_end:year'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_skv_filing" model="ir.actions.act_window">
+        <field name="name">Momsinlämningar</field>
+        <field name="res_model">l10n_se_skv_vat_report.filing</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_skv_filing_search"/>
+        <field name="context">{'search_default_filter_filed': 1}</field>
+    </record>
+
+    <menuitem id="menu_skv_filing"
+              name="Momsinlämningar"
+              parent="menu_skv_section"
+              action="action_skv_filing"
+              sequence="20"/>
+
+</odoo>

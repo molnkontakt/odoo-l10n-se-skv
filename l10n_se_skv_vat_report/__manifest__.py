@@ -1,6 +1,6 @@
 {
     "name": "Sweden — Skatteverket VAT Report",
-    "version": "19.0.1.0.0",
+    "version": "19.0.2.0.0",
     "category": "Accounting/Localizations/Reporting",
     "summary": "Swedish VAT return (momsdeklaration) per Skatteverket boxes 05, 10, 20-24, 30-32, 35-42, 48, 50, 60-62 — with eSKD export",
     "description": """
@@ -53,6 +53,7 @@ License: LGPL-3.
     "depends": ["account", "l10n_se"],
     "data": [
         "security/ir.model.access.csv",
+        "views/skv_filing_views.xml",
         "views/skv_moms_views.xml",
         "reports/skv_moms_report.xml",
     ],

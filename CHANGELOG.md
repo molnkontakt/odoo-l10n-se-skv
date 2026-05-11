@@ -8,7 +8,53 @@ versioning scheme.
 
 ## [Unreleased]
 
-(Nothing yet — first public release is v19.0.1.0.0.)
+## [19.0.2.0.0] — 2026-05-11
+
+### Added
+
+- **Filing model** (`l10n_se_skv_vat_report.filing`) — persistent record
+  of submitted VAT returns. Each filing freezes the box-amounts, links
+  to the period-end journal entry, and stores the exported eSKD XML.
+  Per-company unique constraint on (period_start, period_end) for active
+  (`state=filed`) filings prevents double-filing the same period.
+- **Spiris-style period locking** — `action_create_vat_journal_entry`
+  now creates a filing in `state=filed` alongside the journal entry.
+  The wizard recognizes the period as "submitted" and gates further
+  modifications behind an explicit unfile step.
+- **Stale-filing detection** — when opening the wizard for any period,
+  earlier filings are scanned for drift (= new/changed VAT moves after
+  filing). Drifted prior periods block new eSKD export and bookkeeping
+  with a red banner listing the periods and per-box deltas, so the user
+  must either unfile and re-submit, or move the offending entries to an
+  open period.
+- **Unfile flow** — cancels a filing. If the journal entry is `posted`,
+  Odoo's standard `account.move._reverse_moves` creates a counter-entry
+  in the same period and posts it (preserves the audit trail). Draft
+  entries are unlinked outright. The filing transitions to
+  `state=cancelled` with reason, timestamp, and reverser captured.
+- **Filings list/form views** + menu entry under
+  *Accounting → Reporting → Skatteverket → Momsinlämningar*.
+
+### Changed
+
+- **eSKD export now requires a filing** — exporting before bookkeeping
+  is no longer possible; the XML always reflects the frozen filing
+  values, guaranteeing the uploaded file matches what's on 2650.
+  Re-exporting an existing filing is allowed and updates the stored
+  XML attachment on the filing record.
+- **Wizard idempotency check** moved from `account.move.ref` lookup to
+  the filing's SQL exclusion constraint — stronger guarantee, no
+  reliance on ref strings.
+
+### Compliance rationale
+
+- Mirrors how Spiris and similar SE accounting tools handle period
+  closure: one filing per period, corrections require unfile + re-submit
+  rather than incremental amendment files. Aligns with SFL 49 kap §11
+  (period-error skattetillägg) — small drift caught before re-filing
+  avoids the 2 % surcharge.
+
+[19.0.2.0.0]: https://github.com/molnkontakt/odoo-l10n-se-skv/releases/tag/v19.0.2.0.0
 
 ## [19.0.1.0.0] — 2026-05-10
 
@@ -44,4 +90,4 @@ versioning scheme.
 - Output format matches Skatteverket's published eSKD spec exactly
 
 [19.0.1.0.0]: https://github.com/molnkontakt/odoo-l10n-se-skv/releases/tag/v19.0.1.0.0
-[Unreleased]: https://github.com/molnkontakt/odoo-l10n-se-skv/compare/v19.0.1.0.0...HEAD
+[Unreleased]: https://github.com/molnkontakt/odoo-l10n-se-skv/compare/v19.0.2.0.0...HEAD
