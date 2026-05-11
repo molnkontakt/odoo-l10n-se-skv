@@ -880,7 +880,9 @@ class SkvMomsWizard(models.TransientModel):
                 label=escape(f.period_label or ""),
                 filed_at=escape(filed_str),
                 user=escape(f.filed_by.name or ""),
-                amount=escape(f"{f.to_pay:,.2f}"),
+                # to_pay is a Monetary float — formatter only emits digits,
+                # space and comma. No escape needed but kept consistent.
+                amount=f"{f.to_pay:,.2f}",
             )
 
     @api.depends("date_from", "date_to")

@@ -53,7 +53,10 @@ class SkvFiling(models.Model):
     cancelled_by = fields.Many2one("res.users", string="Ångrad av", readonly=True)
     cancel_reason = fields.Text(string="Anledning till ångrande")
 
-    # Frusna box-värden (JSON: {"se_05": 12345.0, "se_10": 3086.25, ...})
+    # Frusna box-värden — JSON-objekt med Decimal-quantized strängar
+    # för att undvika float-precision drift, t.ex.:
+    #   {"se_05": "12345.67", "se_10": "3086.25", ...}
+    # get_box_amounts() läser tillbaka som Decimal.
     box_amounts_json = fields.Text(string="Frusna box-värden (JSON)",
                                    readonly=True, required=True)
 
