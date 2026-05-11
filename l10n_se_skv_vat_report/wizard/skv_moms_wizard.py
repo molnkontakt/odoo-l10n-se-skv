@@ -1,12 +1,18 @@
 """SKV Momsrapport-wizard — välj period, generera rapport."""
 
 import base64
+import json
+import logging
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
 from dateutil.relativedelta import relativedelta
+from markupsafe import Markup, escape
+
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
+
+_logger = logging.getLogger(__name__)
 
 # eSKD XML-taggnamn per SKV-ruta. Källa: Skatteverkets officiella spec
 # (https://www.skatteverket.se/foretag/skatterochavdrag/momsdeklaration/...)
@@ -134,6 +140,7 @@ class SkvMomsWizard(models.TransientModel):
     _description = "SKV Momsrapport — period-väljare"
 
     period_type = fields.Selection([
+        ("year", "År"),
         ("quarter", "Kvartal"),
         ("month", "Månad"),
         ("custom", "Eget intervall"),
@@ -186,7 +193,10 @@ class SkvMomsWizard(models.TransientModel):
         if not self.year:
             return
         year_int = int(self.year)
-        if self.period_type == "quarter" and self.quarter:
+        if self.period_type == "year":
+            self.date_from = date(year_int, 1, 1)
+            self.date_to = date(year_int, 12, 31)
+        elif self.period_type == "quarter" and self.quarter:
             q = int(self.quarter)
             start_month = (q - 1) * 3 + 1
             self.date_from = date(year_int, start_month, 1)
@@ -471,7 +481,9 @@ class SkvMomsWizard(models.TransientModel):
         }
 
     def _period_label(self):
-        """Human label like '2026 Q1' or '2026-03' for ref-fältet."""
+        """Human label like '2026 Q1', '2026-03', or '2026' for ref-fältet."""
+        if self.period_type == "year":
+            return f"{self.year}"
         if self.period_type == "quarter" and self.quarter:
             return f"{self.year} Q{self.quarter}"
         if self.period_type == "month" and self.month:
@@ -495,8 +507,25 @@ class SkvMomsWizard(models.TransientModel):
         if not self.date_from or not self.date_to:
             self._onchange_period()
 
+        # Spiris-modell: blockera om tidigare inlämnade perioder har drift,
+        # eller om denna period redan har en aktiv inlämning.
+        self._block_if_stale()
+        if self.filing_id:
+            raise UserError(_(
+                "Perioden är redan inlämnad (%s). Ångra inlämningen "
+                "först om du vill boka om."
+            ) % self.filing_id.display_name)
+
+        # Booking always uses POSTED moves only (we close 2611-264x balances
+        # to 2650 — drafts are not on those balances yet). If the user has
+        # toggled only_posted=False for preview purposes, re-enable it for
+        # the actual booking so the filing snapshot matches what's on 2650.
+        if not self.only_posted:
+            self.only_posted = True
+
         Move = self.env["account.move"]
         Account = self.env["account.account"]
+        Filing = self.env["l10n_se_skv_vat_report.filing"]
 
         period_ref = f"MOMS {self._period_label()}"
 
@@ -506,28 +535,6 @@ class SkvMomsWizard(models.TransientModel):
             ("company_id", "=", self.env.company.id),
         ], limit=1)
 
-        # Idempotency check — narrowed to (move_type='entry', this journal,
-        # this period's date, company, ref). Prevents both:
-        #   * False positives when an unrelated move happens to share the ref
-        #   * Duplicate creation if the user clicks twice
-        # Race condition between two simultaneous clicks is mitigated by
-        # the check; a hard guarantee would require a DB-level unique
-        # constraint which is out of scope for a pure module (no model
-        # fields touched).
-        idempotency_domain = [
-            ("ref", "=", period_ref),
-            ("company_id", "=", self.env.company.id),
-            ("move_type", "=", "entry"),
-            ("date", "=", self.date_to),
-        ]
-        if misc_journal:
-            idempotency_domain.append(("journal_id", "=", misc_journal.id))
-        existing = Move.search(idempotency_domain, limit=1)
-        if existing:
-            raise UserError(_(
-                "En momsbokföring för %s finns redan (%s, status: %s). "
-                "Radera den först om du vill skapa om bokföringen."
-            ) % (period_ref, existing.name or _("utkast"), existing.state))
         if not misc_journal:
             raise UserError(_("Hittar ingen journal av typen 'Diverse operationer'."))
 
@@ -685,30 +692,98 @@ class SkvMomsWizard(models.TransientModel):
             "line_ids": line_vals,
         })
 
-        # Open the draft for review
+        # Compute and freeze the box-amounts for this period — these are
+        # the values eSKD will report (and what stale-detection compares
+        # against in future periods).
+        #
+        # Store as Decimal-quantized strings (not floats) so the JSON
+        # snapshot is bit-exact and stale-detection doesn't trigger on
+        # float representation noise (e.g. 12345.67 → 12345.6700000001).
+        rows, total_out, total_in, to_pay = self._compute_box_amounts()
+        TWO = Decimal("0.01")
+        box_amounts = {
+            r["code"]: str(Decimal(str(r["amount"])).quantize(TWO, rounding=ROUND_HALF_UP))
+            for r in rows
+        }
+
+        filing = Filing.create({
+            "period_start": self.date_from,
+            "period_end": self.date_to,
+            "period_label": self._period_label(),
+            "box_amounts_json": json.dumps(box_amounts),
+            "total_out_vat": total_out,
+            "total_in_vat": total_in,
+            "to_pay": to_pay,
+            "journal_entry_id": move.id,
+            "company_id": self.env.company.id,
+        })
+
+        # Auto-generate the eSKD file from the frozen values immediately —
+        # "lämna in" means the eSKD upload to Skatteverket is the deliverable,
+        # so the file should be ready to download on the filing form without
+        # needing to re-open the wizard.
+        xml_bytes = self._build_eskd_xml(rows, to_pay)
+        filename = (f"{self.date_from.strftime('%Y%m%d')}"
+                    f"-{self.date_to.strftime('%Y%m%d')}.eskd")
+        filing.write({
+            "eskd_data": base64.b64encode(xml_bytes),
+            "eskd_filename": filename,
+        })
+
+        # Open the filing — from there the user can download eSKD, view the
+        # journal entry, or unfile.
         return {
             "type": "ir.actions.act_window",
-            "name": _("Momsbokföring %s") % self._period_label(),
-            "res_model": "account.move",
-            "res_id": move.id,
+            "name": _("Momsinlämning %s") % self._period_label(),
+            "res_model": "l10n_se_skv_vat_report.filing",
+            "res_id": filing.id,
             "view_mode": "form",
             "target": "current",
         }
 
     def action_export_eskd(self):
-        """Generate eSKD XML and offer download."""
+        """Generate eSKD XML and offer download.
+
+        Kräver att perioden är BOKAD (= filing finns) — eSKD-värdena ska
+        alltid matcha det som är bokfört på 2650. Tidigare flöde där eSKD
+        kunde exporteras separat innan bokning ledde till divergens om
+        nya verifikat tillkom mellan export och bokning.
+        """
         self.ensure_one()
         if not self.date_from or not self.date_to:
             self._onchange_period()
         if not self.only_posted:
             raise UserError(_("eSKD-export kräver bara bokförda verifikat. "
                               "Kryssa i 'Endast bokförda verifikat'."))
-        rows, _out, _in, to_pay = self._compute_box_amounts()
+        self._block_if_stale()
+        if not self.filing_id:
+            raise UserError(_(
+                "Perioden är inte bokad ännu. Kör 'Skapa momsbokföring' "
+                "först — bokningen skapar inlämningen och fryser värdena, "
+                "varefter eSKD kan exporteras."
+            ))
 
-        xml_bytes = self._build_eskd_xml(rows, to_pay)
+        # Use the FROZEN values from the filing, not a fresh recompute.
+        # Stale-detection above ensures these still match reality; reading
+        # from the filing guarantees the eSKD download exactly matches the
+        # bokning, even if a re-export happens later.
+        # get_box_amounts() returns Decimal — _build_eskd_xml's to_int_kr()
+        # uses Decimal(str(val)) internally so we can pass either type.
+        frozen = self.filing_id.get_box_amounts()
+        zero = Decimal("0")
+        rows = [{"code": code, "amount": frozen.get(code, zero),
+                 "label": label} for code, label in SKV_ROWS]
+        xml_bytes = self._build_eskd_xml(rows, self.filing_id.to_pay)
         filename = f"{self.date_from.strftime('%Y%m%d')}-{self.date_to.strftime('%Y%m%d')}.eskd"
         self.eskd_filename = filename
         self.eskd_data = base64.b64encode(xml_bytes)
+
+        # Persist the exported XML on the filing too — so we can show
+        # exactly what was uploaded later.
+        self.filing_id.write({
+            "eskd_data": self.eskd_data,
+            "eskd_filename": filename,
+        })
 
         return {
             "type": "ir.actions.act_url",
@@ -764,6 +839,227 @@ class SkvMomsWizard(models.TransientModel):
         string="Compliance-varningar",
         compute="_compute_compliance_warnings",
     )
+
+    # ------------------------------------------------------------------
+    # Filing status (Spiris-modell: en filing per period, fryser värden)
+    # ------------------------------------------------------------------
+    filing_id = fields.Many2one(
+        "l10n_se_skv_vat_report.filing",
+        string="Aktiv inlämning för perioden",
+        compute="_compute_filing_id",
+    )
+    filing_status_html = fields.Html(
+        string="Inlämningsstatus",
+        compute="_compute_filing_status_html",
+    )
+    stale_filings_html = fields.Html(
+        string="Tidigare perioder med drift",
+        compute="_compute_stale_filings_html",
+    )
+    has_stale_prior = fields.Boolean(
+        compute="_compute_stale_filings_html",
+        help="True om någon tidigare inlämnad period har drivit (= nya verifikat "
+             "med moms efter inlämning). Blockerar eSKD-export och bokning.",
+    )
+    overlapping_filings_html = fields.Html(
+        string="Överlappande inlämningar",
+        compute="_compute_overlapping_filings_html",
+    )
+    has_overlapping_filing = fields.Boolean(
+        compute="_compute_overlapping_filings_html",
+        help="True om vald period delvis eller helt täcks av en redan inlämnad "
+             "period med annan periodlängd (t.ex. månad inom inlämnat kvartal). "
+             "Blockerar export/bokning.",
+    )
+    cancel_reason = fields.Text(string="Anledning till ångrande")
+
+    @api.depends("date_from", "date_to")
+    def _compute_filing_id(self):
+        Filing = self.env["l10n_se_skv_vat_report.filing"]
+        for w in self:
+            if not w.date_from or not w.date_to:
+                w.filing_id = False
+                continue
+            w.filing_id = Filing.find_filed_for_period(
+                w.date_from, w.date_to, w.env.company.id)
+
+    @api.depends("filing_id")
+    def _compute_filing_status_html(self):
+        for w in self:
+            if not w.filing_id:
+                w.filing_status_html = False
+                continue
+            f = w.filing_id
+            filed_str = fields.Datetime.context_timestamp(
+                w, f.filed_at).strftime("%Y-%m-%d %H:%M")
+            # Escape user-controlled strings (period_label is ours, but
+            # filed_by.name could be anything). Use Markup for the static
+            # template so escape() is applied to interpolated values only.
+            w.filing_status_html = Markup(
+                '<div class="alert alert-info" style="margin:0;">'
+                '<strong>📄 Period redan inlämnad</strong><br/>'
+                'MOMS {label} bokad och eSKD-exporterad {filed_at} '
+                'av {user}.<br/>'
+                'Att betala SKV: <strong>{amount} kr</strong>. '
+                'För att ändra: ångra inlämningen först (knapp nedan), '
+                'sedan kan du generera om rapporten.'
+                '</div>'
+            ).format(
+                label=escape(f.period_label or ""),
+                filed_at=escape(filed_str),
+                user=escape(f.filed_by.name or ""),
+                # to_pay is a Monetary float — formatter only emits digits,
+                # space and comma. No escape needed but kept consistent.
+                amount=f"{f.to_pay:,.2f}",
+            )
+
+    @api.depends("date_from", "date_to")
+    def _compute_stale_filings_html(self):
+        Filing = self.env["l10n_se_skv_vat_report.filing"]
+        for w in self:
+            w.has_stale_prior = False
+            w.stale_filings_html = False
+            if not w.date_from:
+                continue
+            try:
+                stale = Filing.find_stale_prior_filings(
+                    w.date_from, w.env.company.id)
+            except Exception:
+                # Log full traceback server-side; show a generic message
+                # in the UI to avoid leaking internal info via the banner.
+                _logger.exception(
+                    "Stale-filing check failed for wizard period %s",
+                    w.date_from)
+                w.stale_filings_html = Markup(
+                    '<div class="alert alert-info">Kunde inte kontrollera '
+                    'tidigare inlämningar — se serverloggar för detaljer.'
+                    '</div>'
+                )
+                continue
+            if not stale:
+                continue
+            w.has_stale_prior = True
+            # Build the inner <li>-list safely: every interpolated value
+            # goes through escape(), summary string is concatenated as
+            # Markup for the static delimiters.
+            items = []
+            for f in stale:
+                drift = f.get_drift_details()
+                # Each diff piece is built from internal data (code, diff
+                # number) — still escape defensively.
+                diff_pieces = [
+                    escape(f"{d['code'][3:]}: {d['diff']:+,.0f} kr")
+                    for d in drift[:4]
+                ]
+                if len(drift) > 4:
+                    diff_pieces.append(escape(f"+{len(drift) - 4} till"))
+                diff_summary = Markup(", ").join(diff_pieces)
+                filed_str = fields.Datetime.context_timestamp(
+                    w, f.filed_at).strftime("%Y-%m-%d")
+                items.append(Markup(
+                    '<li><strong>MOMS {label}</strong> '
+                    '(inlämnad {filed_at}): {diff}</li>'
+                ).format(
+                    label=escape(f.period_label or ""),
+                    filed_at=escape(filed_str),
+                    diff=diff_summary,
+                ))
+            w.stale_filings_html = Markup(
+                '<div class="alert alert-danger" style="margin:0;">'
+                '<strong>⛔ Det finns ändringar i tidigare inlämnade '
+                'perioder</strong><br/>'
+                'Nya eller ändrade momsverifikat har dykt upp i perioder '
+                'som redan är bokförda och rapporterade till SKV. Du måste '
+                'antingen ångra dessa inlämningar och göra om dem, eller '
+                'flytta verifikaten till en öppen period innan du kan '
+                'fortsätta.<ul style="margin:8px 0 0 0;">{items}</ul></div>'
+            ).format(items=Markup("").join(items))
+
+    @api.depends("date_from", "date_to")
+    def _compute_overlapping_filings_html(self):
+        Filing = self.env["l10n_se_skv_vat_report.filing"]
+        for w in self:
+            w.has_overlapping_filing = False
+            w.overlapping_filings_html = False
+            if not w.date_from or not w.date_to:
+                continue
+            overlapping = Filing.find_overlapping_filings(
+                w.date_from, w.date_to, w.env.company.id)
+            if not overlapping:
+                continue
+            w.has_overlapping_filing = True
+            items = []
+            for f in overlapping:
+                items.append(Markup(
+                    '<li><strong>MOMS {label}</strong> ({start} – {end})</li>'
+                ).format(
+                    label=escape(f.period_label or ""),
+                    start=escape(str(f.period_start)),
+                    end=escape(str(f.period_end)),
+                ))
+            w.overlapping_filings_html = Markup(
+                '<div class="alert alert-danger" style="margin:0;">'
+                '<strong>⛔ Vald period överlappar redan inlämnade '
+                'perioder</strong><br/>'
+                'Följande inlämning(ar) täcker helt eller delvis '
+                'intervallet {date_from} – {date_to}:<ul style="margin:8px 0 0 0;">'
+                '{items}</ul>'
+                'Välj antingen exakt samma period som inlämningen (då kan '
+                'du ångra den), eller en period som inte överlappar.'
+                '</div>'
+            ).format(
+                date_from=escape(str(w.date_from)),
+                date_to=escape(str(w.date_to)),
+                items=Markup("").join(items),
+            )
+
+    def _block_if_stale(self):
+        """Raise UserError if there are drifted prior filings or overlapping
+        filings (period partially/fully covered by another active filing).
+        """
+        self.ensure_one()
+        Filing = self.env["l10n_se_skv_vat_report.filing"]
+
+        overlap = Filing.find_overlapping_filings(
+            self.date_from, self.date_to, self.env.company.id)
+        if overlap:
+            labels = ", ".join(overlap.mapped("period_label"))
+            raise UserError(_(
+                "Vald period (%s – %s) överlappar redan inlämnade perioder: "
+                "%s. Välj en period som inte överlappar, eller ångra den "
+                "inlämningen först."
+            ) % (self.date_from, self.date_to, labels))
+
+        stale = Filing.find_stale_prior_filings(
+            self.date_from, self.env.company.id)
+        if stale:
+            labels = ", ".join(stale.mapped("period_label"))
+            raise UserError(_(
+                "Tidigare inlämnade perioder har ändrats: %s. "
+                "Ångra dem och boka om, eller flytta de nya verifikaten till "
+                "innevarande period, innan du kan fortsätta."
+            ) % labels)
+
+    def action_unfile_period(self):
+        """Cancel the filing for the wizard's period (Spiris flow)."""
+        self.ensure_one()
+        if not self.filing_id:
+            raise UserError(_("Det finns ingen aktiv inlämning att ångra."))
+        return self.filing_id.with_context(
+            default_cancel_reason=self.cancel_reason
+        ).action_unfile()
+
+    def action_view_filing(self):
+        self.ensure_one()
+        if not self.filing_id:
+            raise UserError(_("Ingen inlämning för perioden."))
+        return {
+            "type": "ir.actions.act_window",
+            "res_model": "l10n_se_skv_vat_report.filing",
+            "res_id": self.filing_id.id,
+            "view_mode": "form",
+            "target": "current",
+        }
 
     @api.depends("date_from", "date_to")
     def _compute_compliance_warnings(self):

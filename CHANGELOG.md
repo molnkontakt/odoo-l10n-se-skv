@@ -8,7 +8,115 @@ versioning scheme.
 
 ## [Unreleased]
 
-(Nothing yet — first public release is v19.0.1.0.0.)
+## [19.0.2.1.0] — 2026-05-11
+
+### Added
+
+- **Yearly reporting period** — wizard supports `period_type=year` for
+  businesses with beskattningsunderlag ≤ 1M SEK that report annually
+  (SFL 26 kap §11). Defaults to previous year, spans Jan 1 – Dec 31.
+- **Overlap detection** — if the selected period partially or fully
+  overlaps a filed period (e.g. February selected when Q1 is already
+  filed), a red banner lists the conflicting filings and blocks
+  export/booking. Catches the previously missed case where
+  `period_type=month` allowed booking inside a filed quarter.
+
+### Changed (UX)
+
+- **eSKD generated automatically at filing** — the file is created
+  inside `action_create_vat_journal_entry` from the frozen values, so
+  it is ready to download from the filing form without re-opening the
+  wizard. The wizard's eSKD button is now labelled "Regenerera
+  eSKD-fil" and clearly marked as a fallback.
+- **Filing form header** has a "Hämta eSKD-fil" primary action;
+  body has a prominent "eSKD-fil att skicka till Skatteverket"
+  section with an inline link to skatteverket.se upload.
+
+### Fixed (install-time errors caught during deploy)
+
+- Removed invalid `expand` and `string` attributes from `<group>`
+  inside `<search>` — Odoo 19 RNG validation rejects them.
+- Manifest data-list reordered so `skv_moms_views.xml` (defines parent
+  menu `menu_skv_section`) is loaded before `skv_filing_views.xml`
+  (which hangs a submenu under it).
+
+## [19.0.2.0.1] — 2026-05-11
+
+### Fixed (review feedback from PR #2)
+
+- **Filing creation no longer fails for invoice users** — ACL grants
+  `account.group_account_invoice` create+write on filing (delete still
+  manager-only).
+- **Replaced `EXCLUDE` constraint with partial UNIQUE INDEX** — works on
+  vanilla PostgreSQL without the `btree_gist` extension.
+- **Drafts can be unfiled cleanly** — null `journal_entry_id` before
+  unlinking the draft move so the `ondelete='restrict'` FK doesn't
+  block the cancellation.
+- **Booking always uses posted moves** — wizard auto-enables
+  `only_posted` before creating the journal entry, so the filing
+  snapshot can never include drafts that aren't on 2650.
+- **Decimal-quantized box amounts** — `box_amounts_json` now stores
+  Decimal-quantized strings instead of floats, eliminating
+  representation noise in stale-detection.
+- **Multi-company drift checks** — `_current_box_amounts` runs in
+  `with_company(filing.company_id)` so balances are never mixed across
+  companies.
+- **HTML escaping in wizard banners** — `period_label`, `filed_by.name`,
+  and other interpolated values are escaped via `markupsafe`. Prevents
+  potential XSS via maliciously-named users.
+- **Sanitized exception path** — full traceback logged server-side via
+  `_logger.exception`, banner shows a generic message instead of the
+  raw exception text.
+
+## [19.0.2.0.0] — 2026-05-11
+
+### Added
+
+- **Filing model** (`l10n_se_skv_vat_report.filing`) — persistent record
+  of submitted VAT returns. Each filing freezes the box-amounts, links
+  to the period-end journal entry, and stores the exported eSKD XML.
+  Per-company unique constraint on (period_start, period_end) for active
+  (`state=filed`) filings prevents double-filing the same period.
+- **Spiris-style period locking** — `action_create_vat_journal_entry`
+  now creates a filing in `state=filed` alongside the journal entry.
+  The wizard recognizes the period as "submitted" and gates further
+  modifications behind an explicit unfile step.
+- **Stale-filing detection** — when opening the wizard for any period,
+  earlier filings are scanned for drift (= new/changed VAT moves after
+  filing). Drifted prior periods block new eSKD export and bookkeeping
+  with a red banner listing the periods and per-box deltas, so the user
+  must either unfile and re-submit, or move the offending entries to an
+  open period.
+- **Unfile flow** — cancels a filing. If the journal entry is `posted`,
+  Odoo's standard `account.move._reverse_moves` creates a counter-entry
+  in the same period and posts it (preserves the audit trail). Draft
+  entries are unlinked outright. The filing transitions to
+  `state=cancelled` with reason, timestamp, and reverser captured.
+- **Filings list/form views** + menu entry under
+  *Accounting → Reporting → Skatteverket → Momsinlämningar*.
+
+### Changed
+
+- **eSKD export now requires a filing** — exporting before bookkeeping
+  is no longer possible; the XML always reflects the frozen filing
+  values, guaranteeing the uploaded file matches what's on 2650.
+  Re-exporting an existing filing is allowed and updates the stored
+  XML attachment on the filing record.
+- **Wizard idempotency check** moved from `account.move.ref` lookup to
+  the filing's SQL exclusion constraint — stronger guarantee, no
+  reliance on ref strings.
+
+### Compliance rationale
+
+- Mirrors how Spiris and similar SE accounting tools handle period
+  closure: one filing per period, corrections require unfile + re-submit
+  rather than incremental amendment files. Aligns with SFL 49 kap §11
+  (period-error skattetillägg) — small drift caught before re-filing
+  avoids the 2 % surcharge.
+
+[19.0.2.0.0]: https://github.com/molnkontakt/odoo-l10n-se-skv/releases/tag/v19.0.2.0.0
+[19.0.2.0.1]: https://github.com/molnkontakt/odoo-l10n-se-skv/releases/tag/v19.0.2.0.1
+[19.0.2.1.0]: https://github.com/molnkontakt/odoo-l10n-se-skv/releases/tag/v19.0.2.1.0
 
 ## [19.0.1.0.0] — 2026-05-10
 
@@ -44,4 +152,4 @@ versioning scheme.
 - Output format matches Skatteverket's published eSKD spec exactly
 
 [19.0.1.0.0]: https://github.com/molnkontakt/odoo-l10n-se-skv/releases/tag/v19.0.1.0.0
-[Unreleased]: https://github.com/molnkontakt/odoo-l10n-se-skv/compare/v19.0.1.0.0...HEAD
+[Unreleased]: https://github.com/molnkontakt/odoo-l10n-se-skv/compare/v19.0.2.0.0...HEAD
