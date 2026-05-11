@@ -4,6 +4,26 @@
 > Edition. All Skatteverket boxes 05-62, eSKD XML export, period-end
 > bookkeeping helper, drill-down to source verifications.
 
+> [!WARNING]
+> **Under active development — use at your own risk.** This module is
+> provided as-is. No functionality has been verified against every
+> possible scenario, chart of accounts variation, or fiscal setup.
+> You are solely responsible for verifying that the report output,
+> eSKD file, and period-end bookkeeping match your actual tax
+> obligations before submitting anything to Skatteverket. Molnkontakt
+> AB disclaims all liability for errors, omissions, incorrect filings,
+> missed deadlines, penalties, or any other consequences arising from
+> use of this module. Always reconcile against your bookkeeping and
+> consult a qualified accountant if uncertain.
+>
+> *På svenska:* Modulen är under utveckling och tillhandahålls i
+> befintligt skick. Ingen funktionalitet är verifierad för alla
+> scenarier. All användning sker på eget ansvar. Molnkontakt AB
+> friskriver sig från allt ansvar för felaktigheter, missade
+> deadlines, skattetillägg eller andra konsekvenser som kan uppstå
+> vid användning. Stäm alltid av mot din bokföring och rådgör med
+> en kvalificerad redovisningskonsult vid osäkerhet.
+
 ## Why
 
 Odoo CE doesn't ship a Swedish VAT report. The OCA `account_financial_report`
@@ -25,7 +45,7 @@ for both Odoo-native invoices **and** legacy SIE imports.
 - **Period picker** — year / quarter / month / custom range. Defaults
   to the previous quarter (the one you typically declare). Yearly
   mode is for businesses with beskattningsunderlag ≤ 1M SEK that
-  report annually per SFL 26 kap §11.
+  report annually per SFL 26 kap. 11 §.
 - **All Skatteverket boxes** — 05, 06, 07, 08, 10, 11, 12, 20-24,
   30-32, 35-42, 48, 50, 60-62.
 - **Inline preview** — HTML table in the wizard.
@@ -57,12 +77,12 @@ for both Odoo-native invoices **and** legacy SIE imports.
   when Q1 is already filed) shows a red banner and blocks
   export/booking until the prior filing is unfiled or the wizard
   range is adjusted.
-- **Stale-prior detection** — every wizard open re-computes the
-  box totals for every earlier filed period and flags any that
-  have drifted (= new or changed VAT-tagged moves after submission).
-  Booking and export are blocked until the user either unfiles the
-  drifted period(s) or moves the offending entries to an open
-  period.
+- **Stale-prior detection** — each time the wizard is opened, it
+  re-computes the box totals for every earlier filed period and
+  flags any that have drifted (= new or changed VAT-tagged moves
+  after submission). Booking and export are blocked until the user
+  either unfiles the drifted period(s) or moves the offending
+  entries to an open period.
 
 ### Compliance checks
 
@@ -178,6 +198,25 @@ Rules implemented are based on:
   directly (always company currency) rather than the cached
   `aml.balance` field, since the cache has been seen to drift on
   Odoo 19 for some EUR/USD invoices.
+
+## Disclaimer
+
+This module is under active development. No part of it has been
+verified for every possible scenario, chart of accounts variation,
+or fiscal setup. **You bear sole responsibility for the correctness
+of every number, journal entry, and eSKD file produced.** Always
+reconcile against your bookkeeping and consult a qualified accountant
+before submitting anything to Skatteverket.
+
+Molnkontakt AB disclaims all liability for any errors, omissions,
+incorrect filings, missed deadlines, penalties (including but not
+limited to *skattetillägg*, *förseningsavgift*, or interest), data
+loss, or any other direct, indirect, incidental, or consequential
+damages arising from the use of this module, regardless of theory of
+liability and even if advised of the possibility of such damages.
+
+This disclaimer is in addition to, and not in lieu of, the warranty
+and liability terms in the LGPL-3 license below.
 
 ## License
 

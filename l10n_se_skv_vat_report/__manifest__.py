@@ -22,7 +22,7 @@ boxes for companies migrating from Visma/Fortnox/SpeedLedger/Bokio/Spiris.
 Features
 --------
 
-* Wizard with quarter / month / custom-range period picker
+* Wizard with year / quarter / month / custom-range period picker
 * Default to the *previous* quarter (the one you typically declare)
 * All Skatteverket boxes 05-62 supported
 * Inline HTML preview, printable PDF report
@@ -34,8 +34,12 @@ Features
 * Drill-down: list all journal lines that contributed to a box, grouped
   by account
 * Draft warning: lists unposted moves in the period as clickable links
-* "Create VAT bookkeeping entry" — generates the period-end clearing
-  draft (closes 261x/262x/263x/264x to 2650, with rounding to 3740)
+* Spiris-style period locking — each submitted period is frozen as a
+  ``l10n_se_skv_vat_report.filing`` record; the closing journal entry,
+  filing record and eSKD file are all generated in one click. To
+  correct a submitted period you explicitly unfile, which reverses the
+  journal entry via Odoo's standard ``_reverse_moves``. Overlapping
+  and drifted prior periods are detected and block new submissions.
 
 Installation
 ------------
@@ -43,7 +47,18 @@ Installation
 1. Install the module via the Apps menu (or ``odoo -i l10n_se_skv_vat_report``).
 2. Make sure your chart of accounts is the Swedish BAS (the ``l10n_se``
    module is a hard dependency).
-3. Open *Accounting → Reporting → Skatteverket → VAT Report*.
+3. Open *Accounting → Reporting → Skatteverket → Momsrapport*.
+
+Disclaimer
+----------
+
+**Under active development — use at your own risk.** This module is
+provided as-is. No functionality has been verified for every possible
+scenario. You bear sole responsibility for the correctness of every
+output before submitting to Skatteverket. Molnkontakt AB disclaims
+all liability for errors, missed deadlines, *skattetillägg*, or any
+other consequences. Always reconcile and consult a qualified
+accountant if uncertain. See README for the full disclaimer.
 
 License: LGPL-3.
 """,
