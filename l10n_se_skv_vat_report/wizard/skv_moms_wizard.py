@@ -220,26 +220,31 @@ class SkvMomsWizard(models.TransientModel):
             ("country_id", "=", SE_country.id),
             ("applicability", "=", "taxes"),
         ])
-        # Map "se_05" → tag id
+        # Map "se_05" → tag id, and "se_05" → balance_negate.
+        # balance_negate comes from l10n_se and tells us which leg the box's
+        # tag is meant to sit on: True = credit leg (sales, output VAT on our
+        # own invoices), False = debit leg.
         tag_by_code = {}
+        negate_by_code = {}
         for t in tags:
             label = (t.with_context(lang="en_US").name or "").strip()
             if label.startswith("se_"):
                 tag_by_code[label] = t.id
+                negate_by_code[label] = t.balance_negate
 
         states = ["posted"] if self.only_posted else ["posted", "draft"]
 
-        # SKV declaration always shows positive amounts.
-        # Sales / output VAT: balance is naturally negative (credit side) → flip.
-        # Purchases / input VAT: balance is positive (debit side) → keep.
-        SALES_OR_OUT_VAT = {
-            "se_05", "se_06", "se_07", "se_08",
-            "se_10", "se_11", "se_12",
-            "se_30", "se_31", "se_32",
-            "se_35", "se_36", "se_37", "se_38",
-            "se_39", "se_40", "se_41", "se_42",
-            "se_60", "se_61", "se_62",
-        }
+        # SKV declaration always shows positive amounts. Which way a box needs
+        # flipping is decided by the tag itself, not by the box number: tags
+        # with balance_negate=True sit on the credit leg and must be flipped,
+        # tags with False already sit on the debit leg.
+        #
+        # There used to be a hardcoded set of "sales/output" boxes here, built
+        # on the assumption that every output-VAT box lives on the credit side.
+        # That does not hold for boxes 30-32 and 60-62 (reverse charge and
+        # import): l10n_se puts those tags on the input-VAT leg (2645, debit)
+        # and sets balance_negate=False. The hardcoded flip made box 30
+        # negative, understating "to pay" by 2 × the box amount.
 
         # One grouped query for all relevant tag IDs, then map results to
         # boxes locally. Replaces a previous N-queries-per-call pattern
@@ -267,7 +272,7 @@ class SkvMomsWizard(models.TransientModel):
             if not tag_id:
                 continue
             balance = balance_by_tag.get(tag_id, 0.0)
-            amount = round(-balance, 2) if code in SALES_OR_OUT_VAT else round(balance, 2)
+            amount = round(-balance, 2) if negate_by_code.get(code) else round(balance, 2)
             rows.append({
                 "code": code,
                 "label": label,
