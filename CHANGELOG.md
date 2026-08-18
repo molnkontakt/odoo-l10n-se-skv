@@ -8,6 +8,22 @@ versioning scheme.
 
 ## [Unreleased]
 
+## [19.0.2.1.1] — 2026-08-18
+
+### Fixed
+
+- **Box 30/31/32 and 60/61/62 had the wrong sign** — the wizard flipped every
+  box in a hardcoded "sales/output VAT" list, on the assumption that all output
+  VAT sits on the credit side. That does not hold for reverse charge and import:
+  `l10n_se` puts those tags on the input-VAT repartition leg (2645, debit) and
+  sets `balance_negate=False` on the tag. The flip made box 30 negative, which
+  understated the amount payable by twice the box value and produced an eSKD
+  file with a negative `MomsInkopUtgHog`. The sign now comes from the tag's own
+  `balance_negate`, so the box list no longer has to be kept in sync by hand.
+
+  This also affected `filing._current_box_amounts()`, and therefore stale-filing
+  detection, since it reuses the wizard's computation.
+
 ## [19.0.2.1.0] — 2026-05-11
 
 ### Added
