@@ -16,13 +16,18 @@ flyttar de nya verifikaten till en öppen period.
 import base64
 import hashlib
 import json
+import logging
 from decimal import ROUND_HALF_UP, Decimal
+
+from markupsafe import Markup, escape
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 
 # Tolerance for drift detection: 0.50 kr per box. eSKD rounds to whole
 # kronor anyway, so sub-krona deltas (öres) are not material.
+_logger = logging.getLogger(__name__)
+
 DRIFT_TOLERANCE = Decimal("0.50")
 TWO = Decimal("0.01")
 
@@ -79,6 +84,13 @@ class SkvFiling(models.Model):
     # eSKD-fil som faktiskt exporterades
     eskd_data = fields.Binary(string="eSKD-fil", readonly=True, attachment=True)
     eskd_filename = fields.Char(string="eSKD-filnamn", readonly=True)
+    drift_html = fields.Html(
+        string="Ändringar sedan inlämning", compute="_compute_drift_html",
+        sanitize=False,
+        help="Ruta för ruta: vad som lämnades in och vad boken säger idag. "
+             "Beloppen visas i hela kronor, alltså så som de står på "
+             "deklarationen.")
+
     eskd_sha256 = fields.Char(
         string="eSKD sha256", size=64, readonly=True,
         compute="_compute_eskd_sha256", store=True, index=True,
@@ -101,6 +113,55 @@ class SkvFiling(models.Model):
     # init() instead. Constraints with WHERE-clauses require either
     # EXCLUDE (which needs btree_gist extension) or a partial UNIQUE INDEX
     # (vanilla PostgreSQL). Partial index is simpler and portable.
+
+    def _compute_drift_html(self):
+        """Render the box-by-box difference between filed and current books.
+
+        find_stale_prior_filings() already tells you THAT a period drifted,
+        and blocks the next filing until it is dealt with. What it does not
+        give you is the two numbers per box — and those are exactly what a
+        correction to Skatteverket asks for. Rendered in whole kronor since
+        that is the unit the declaration is filed in.
+        """
+        for rec in self:
+            rec.drift_html = False
+            if rec.state != "filed":
+                continue
+            try:
+                drift = rec.get_drift_details()
+            except Exception:
+                _logger.exception("Drift check failed for filing %s", rec.id)
+                rec.drift_html = Markup(
+                    '<div class="alert alert-info" style="margin:0;">'
+                    'Kunde inte jämföra mot boken — se serverloggar.</div>')
+                continue
+            if not drift:
+                rec.drift_html = Markup(
+                    '<div class="alert alert-success" style="margin:0;">'
+                    'Boken stämmer fortfarande med det som lämnades in.</div>')
+                continue
+            rows = Markup("").join(
+                Markup("<tr><td>Ruta {code}</td>"
+                       "<td class='text-end'>{frozen}</td>"
+                       "<td class='text-end'>{current}</td>"
+                       "<td class='text-end'>{diff}</td></tr>").format(
+                    code=escape(d["code"][3:]),
+                    frozen=escape(f"{d['frozen']:,.0f}"),
+                    current=escape(f"{d['current']:,.0f}"),
+                    diff=escape(f"{d['diff']:+,.0f}"),
+                )
+                for d in drift
+            )
+            rec.drift_html = Markup(
+                '<div class="alert alert-warning" style="margin:0;">'
+                '<strong>Boken har ändrats sedan inlämningen</strong><br/>'
+                'Rutorna nedan skiljer sig från det som deklarerades. '
+                'Kolumnen "Nu" är vad en rättelse ska innehålla.'
+                '<table class="table table-sm" style="margin-top:8px;">'
+                '<tr><th>Ruta</th><th class="text-end">Inlämnat</th>'
+                '<th class="text-end">Nu</th><th class="text-end">Diff</th></tr>'
+                '{rows}</table></div>'
+            ).format(rows=rows)
 
     @api.depends("eskd_data")
     def _compute_eskd_sha256(self):
