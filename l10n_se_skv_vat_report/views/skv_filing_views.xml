@@ -64,6 +64,9 @@
                             <field name="company_id" groups="base.group_multi_company"/>
                         </group>
                     </group>
+                    <field name="drift_html" nolabel="1" readonly="1"
+                           invisible="not drift_html"/>
+
                     <group string="Beräknat (frusna värden)">
                         <group>
                             <field name="total_out_vat"/>

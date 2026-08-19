@@ -8,6 +8,17 @@ versioning scheme.
 
 ## [Unreleased]
 
+## [19.0.2.3.0] — 2026-08-18
+
+### Added
+
+- **Box-by-box drift table on the filing** — `filing.drift_html` renders what
+  was filed against what the books say now, per box, in whole kronor. Stale
+  detection already told you THAT a period drifted and blocked the next filing
+  until it was resolved, but preparing the correction meant recomputing the two
+  numbers per box by hand — which is precisely what Skatteverket's correction
+  form asks for. Shows a green "still matches" state when there is no drift.
+
 ## [19.0.2.2.0] — 2026-08-18
 
 ### Added
