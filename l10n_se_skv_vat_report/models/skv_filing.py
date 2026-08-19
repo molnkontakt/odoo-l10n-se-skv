@@ -13,6 +13,8 @@ ny export/bokning tills användaren antingen ångrar gamla filingen eller
 flyttar de nya verifikaten till en öppen period.
 """
 
+import base64
+import hashlib
 import json
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -77,6 +79,13 @@ class SkvFiling(models.Model):
     # eSKD-fil som faktiskt exporterades
     eskd_data = fields.Binary(string="eSKD-fil", readonly=True, attachment=True)
     eskd_filename = fields.Char(string="eSKD-filnamn", readonly=True)
+    eskd_sha256 = fields.Char(
+        string="eSKD sha256", size=64, readonly=True,
+        compute="_compute_eskd_sha256", store=True, index=True,
+        help="Kontrollsumma för filen som skickades till Skatteverket. "
+             "Låter dig bevisa vilken fil som lämnades in när en rättelse "
+             "ska göras långt senare, eller när filen hämtats ur systemet "
+             "och sparats på annat håll.")
 
     # Det skapade momsverifikatet (kan ha blivit reverserat — se reversal_move_id)
     journal_entry_id = fields.Many2one("account.move",
@@ -92,6 +101,21 @@ class SkvFiling(models.Model):
     # init() instead. Constraints with WHERE-clauses require either
     # EXCLUDE (which needs btree_gist extension) or a partial UNIQUE INDEX
     # (vanilla PostgreSQL). Partial index is simpler and portable.
+
+    @api.depends("eskd_data")
+    def _compute_eskd_sha256(self):
+        """Checksum the exported file so a filing can be identified later.
+
+        Stored and computed from eskd_data rather than set at the call sites,
+        so it stays correct for every path that writes the file — the initial
+        write when the period is filed, the re-persist on export, and any
+        future one.
+        """
+        for rec in self:
+            if not rec.eskd_data:
+                rec.eskd_sha256 = False
+                continue
+            rec.eskd_sha256 = hashlib.sha256(base64.b64decode(rec.eskd_data)).hexdigest()
 
     def init(self):
         # One ACTIVE filing per (company, period). Cancelled filings are

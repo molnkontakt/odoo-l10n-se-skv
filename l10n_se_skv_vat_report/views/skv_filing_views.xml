@@ -79,6 +79,7 @@
                            invisible="not eskd_data">
                         <field name="eskd_filename" invisible="1"/>
                         <field name="eskd_data" filename="eskd_filename" nolabel="1"/>
+                        <field name="eskd_sha256" widget="CopyClipboardChar"/>
                         <p class="text-muted" colspan="2">
                             Ladda upp filen på
                             <a href="https://sso.skatteverket.se/in/sso/" target="_blank">skatteverket.se</a>
