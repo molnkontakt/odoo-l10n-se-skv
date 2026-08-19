@@ -8,6 +8,18 @@ versioning scheme.
 
 ## [Unreleased]
 
+## [19.0.2.2.0] — 2026-08-18
+
+### Added
+
+- **sha256 of the filed eSKD file** — `filing.eskd_sha256`, a stored compute
+  over `eskd_data`, shown on the filing form. The file itself already lives on
+  the filing, but a checksum lets you prove which file was uploaded when a
+  correction is prepared months later, or when the file has been pulled out of
+  the system and archived elsewhere. Computed from the field rather than set at
+  each call site, so it covers both the initial write and the re-persist on
+  export.
+
 ## [19.0.2.1.1] — 2026-08-18
 
 ### Fixed
