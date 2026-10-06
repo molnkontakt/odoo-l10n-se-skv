@@ -8,6 +8,19 @@ versioning scheme.
 
 ## [Unreleased]
 
+## [19.0.2.3.1] — 2026-10-06
+
+### Fixed
+
+- **2650 check counts only settlements** — the compliance warning about a balance
+  on 2650 from an earlier period fired on every opening balance, although one is
+  normal (the return is booked at period end and paid in the next period). It now
+  compares the opening balance with what has actually been settled since: net
+  movements on entries between 2650 and payment accounts (1630, 1930 …), i.e.
+  without other 26xx VAT accounts. VAT closings and corrections that move VAT to
+  or from 2650 are not payments; counting every debit since the period start let
+  a correction that was reversed the same day settle the liability once too often.
+
 ## [19.0.2.3.0] — 2026-08-18
 
 ### Added

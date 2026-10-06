@@ -135,6 +135,19 @@ RC_PAIRS = [
 ]
 
 
+
+def unsettled_2650(opening, settled):
+    """What is left of an earlier period's balance on 2650.
+
+    ``opening`` is the 2650 balance (debit − credit) at the period start: negative
+    is a liability to Skatteverket, positive a claim. ``settled`` is the net
+    movement (debit − credit) since then on entries that only move money between
+    2650 and payment accounts. Whatever has the opening's sign after both is still
+    unsettled; once the balance has crossed zero the earlier one is settled.
+    """
+    remaining = opening + settled
+    return abs(remaining) if remaining * opening > 0 else Decimal("0")
+
 class SkvMomsWizard(models.TransientModel):
     _name = "l10n_se_skv_vat_report.wizard"
     _description = "SKV Momsrapport — period-väljare"
@@ -418,9 +431,20 @@ class SkvMomsWizard(models.TransientModel):
                     ),
                 })
 
-        # Check 3: 2650 — får inte ha kvarvarande saldo från tidigare period
-        # vid periodens början. Räkna saldo PER START-DATE genom att summera
-        # alla transaktioner upp till (men inte inklusive) date_from.
+        # Check 3: 2650 — a liability (or claim) from an EARLIER period must not
+        # remain unsettled. An opening balance as such is normal: the return is
+        # booked at period end and Skatteverket draws the money in the next
+        # period, so every period starts with the previous one's balance on 2650.
+        # Warning on that alone made the check fire every time.
+        #
+        # What is wrong is an earlier balance that is STILL unsettled today.
+        # Settlement means movements between 2650 and payment accounts (1630 tax
+        # account, 1930 bank, …), i.e. entries without other VAT accounts (26xx).
+        # VAT closings and corrections that move VAT to or from 2650 create or
+        # change the liability; they are not payments. Counting every debit since
+        # the period start instead let a correction D 2650 / K 2641 that was
+        # reversed the same day settle the old liability once too often.
+        code_key = str(company_id)
         self.env.cr.execute("""
             SELECT COALESCE(SUM(aml.debit - aml.credit), 0)
             FROM account_move_line aml
@@ -430,19 +454,39 @@ class SkvMomsWizard(models.TransientModel):
               AND m.state = 'posted'
               AND m.company_id = %s
               AND m.date < %s
-        """, (str(company_id), company_id, self.date_from))
+        """, (code_key, company_id, self.date_from))
         opening_2650 = Decimal(str(self.env.cr.fetchone()[0] or 0))
-        # Tolerera ören
         if abs(opening_2650) >= Decimal("1.00"):
-            warnings.append({
-                "level": "warning",
-                "message": (
-                    f"⚠ Konto 2650 (Redovisningskonto för moms) har saldo "
-                    f"{opening_2650} kr vid periodens början. Föregående "
-                    f"periods deklaration är troligen inte ombokad mot bank. "
-                    f"När SKV betalas: bokför 2650 D / 1930 K."
-                ),
-            })
+            self.env.cr.execute("""
+                SELECT COALESCE(SUM(aml.debit - aml.credit), 0)
+                FROM account_move_line aml
+                JOIN account_account a ON a.id = aml.account_id
+                JOIN account_move m ON m.id = aml.move_id
+                WHERE a.code_store->>%s = '2650'
+                  AND m.state = 'posted'
+                  AND m.company_id = %s
+                  AND m.date >= %s
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM account_move_line l2
+                      JOIN account_account a2 ON a2.id = l2.account_id
+                      WHERE l2.move_id = m.id
+                        AND a2.code_store->>%s LIKE '26%%'
+                        AND a2.code_store->>%s <> '2650')
+            """, (code_key, company_id, self.date_from, code_key, code_key))
+            settled = Decimal(str(self.env.cr.fetchone()[0] or 0))
+            unsettled = unsettled_2650(opening_2650, settled)
+            if unsettled >= Decimal("1.00"):
+                warnings.append({
+                    "level": "warning",
+                    "message": (
+                        f"⚠ Konto 2650 (Redovisningskonto för moms) har "
+                        f"{unsettled} kr kvar från en tidigare period som "
+                        f"aldrig reglerats. När Skatteverket drar beloppet: "
+                        f"bokför 2650 D mot 1630 (skattekonto) — eller mot "
+                        f"1930 om ni betalar SKV direkt från banken."
+                    ),
+                })
 
         return warnings
 
