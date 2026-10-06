@@ -8,6 +8,20 @@ versioning scheme.
 
 ## [Unreleased]
 
+## [19.0.2.3.2] — 2026-10-06
+
+### Fixed
+
+- **MomsBetala is the sum of the rounded boxes** — the eSKD file rounded the
+  unrounded VAT total while each box is rounded on its own, so the file could
+  say 1 kr more than its own boxes (118 622.64 → 118 623 against boxes summing
+  to 118 622). Skatteverket derives box 49 from the boxes in whole kronor. The
+  same amount now goes on the 2650 line of the period-end entry (when the VAT
+  accounts agree with the boxes within per-box rounding; a larger difference is
+  a real error and is rounded as before so it stays visible) and on the filing,
+  so file, entry and log always agree. The browser view shows the whole-kronor
+  amount next to the exact one.
+
 ## [19.0.2.3.1] — 2026-10-06
 
 ### Fixed
