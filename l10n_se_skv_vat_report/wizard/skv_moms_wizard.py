@@ -99,6 +99,30 @@ OUT_VAT_BOXES = {"se_10", "se_11", "se_12", "se_30", "se_31", "se_32",
 IN_VAT_BOXES = {"se_48"}
 
 
+def to_int_kr(val):
+    """Whole kronor as in the eSKD file.
+
+    ROUND_HALF_UP, consistent with the period-end entry; built-in round() does
+    bankers rounding and would diverge by 1 kr on exact .50 amounts.
+    """
+    return int(Decimal(str(val)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def to_pay_whole_kr(rows):
+    """VAT to pay in whole kronor, computed from the ROUNDED boxes.
+
+    Skatteverket derives box 49 from the boxes in whole kronor, as on the paper
+    form. Rounding the unrounded total instead can make MomsBetala differ by
+    1 kr from the boxes in the same file (118 622.64 → 118 623 while the boxes
+    give 131 912 + 3 394 − 16 684 = 118 622). The same amount goes on the 2650
+    line of the period-end entry and on the filing, so file, entry and log agree.
+    """
+    by_code = {r["code"]: r["amount"] for r in rows}
+    out_kr = sum(to_int_kr(by_code.get(code, 0)) for code in OUT_VAT_BOXES)
+    in_kr = sum(to_int_kr(by_code.get(code, 0)) for code in IN_VAT_BOXES)
+    return out_kr - in_kr
+
+
 # BAS-konton → ruta-mappning för referens och valideringar.
 # Källa: BAS-kontoplan 2026 + Skatteverkets blankett SKV 4700, sektion 7
 # och 8 ("Momsdeklaration field-to-BAS account mapping").
@@ -328,14 +352,7 @@ class SkvMomsWizard(models.TransientModel):
         # Period = YYYYMM of last month in interval
         period = self.date_to.strftime("%Y%m")
 
-        # Round to int (eSKD uses no decimals — kronor only).
-        # Use ROUND_HALF_UP to stay consistent with the rest of the
-        # module (VAT period-end bookkeeping uses Decimal+HALF_UP). Built-in
-        # round() does bankers rounding which would diverge by ±1 kr on
-        # exact .50-amounts.
-        def to_int_kr(val):
-            return int(Decimal(str(val)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-
+        # Whole kronor only (eSKD has no decimals): to_int_kr / to_pay_whole_kr.
         # Header per SKV-spec: line 1 XML decl, line 2 root element, line 3 OrgNr,
         # line 4 <Moms>, line 5 <Period>. No DOCTYPE — SKV's official examples
         # (agexempel_v6.txt + the moms documentation) omit it.
@@ -355,7 +372,7 @@ class SkvMomsWizard(models.TransientModel):
 
         # MomsBetala är obligatorisk — alltid med, även 0.
         # Negativt belopp = moms att få tillbaka, anges med "-" direkt före siffran.
-        pay_int = to_int_kr(to_pay)
+        pay_int = to_pay_whole_kr(rows)  # the sum of the rounded boxes, as SKV computes it
         if pay_int < 0:
             lines.append(f'    <MomsBetala>-{abs(pay_int)}</MomsBetala>')
         else:
@@ -678,9 +695,21 @@ class SkvMomsWizard(models.TransientModel):
                 ("company_ids", "in", [self.env.company.id]),
             ], limit=1)
 
-        # eSKD-export rapporterar heltal kronor → 2650 ska bli heltal så att
-        # bank-betalningen 2650 D / 1930 K går rent. Diff (öres) → 3740.
-        rounded_net = Decimal(int(net_to_offset.to_integral_value(rounding=ROUND_HALF_UP)))
+        # 2650 must be exactly what Skatteverket draws, i.e. MomsBetala in the
+        # eSKD file: the sum of the ROUNDED boxes. Rounding the accounts' net
+        # instead could leave 2650 one krona off the file, and that krona then
+        # stayed on 2650 forever. Boxes and accounts should agree to the öre;
+        # a difference beyond what per-box rounding can produce is a real error
+        # (e.g. an untagged line on a VAT account) that must not be hidden on
+        # 3740 — then the accounts' net is rounded as before. Öre diff → 3740.
+        box_rows, _box_out, _box_in, _box_pay = self._compute_box_amounts()
+        pay_kr = Decimal(to_pay_whole_kr(box_rows))
+        n_boxes = sum(1 for r in box_rows
+                      if r["code"] in OUT_VAT_BOXES | IN_VAT_BOXES and r["amount"])
+        if abs(net_to_offset - pay_kr) <= Decimal("0.5") * max(n_boxes, 1) + Decimal("0.01"):
+            rounded_net = pay_kr
+        else:
+            rounded_net = Decimal(int(net_to_offset.to_integral_value(rounding=ROUND_HALF_UP)))
         rounding_diff = (net_to_offset - rounded_net).quantize(TWO, rounding=ROUND_HALF_UP)
 
         # 2650-raden — heltal kronor
@@ -762,7 +791,7 @@ class SkvMomsWizard(models.TransientModel):
             "box_amounts_json": json.dumps(box_amounts),
             "total_out_vat": total_out,
             "total_in_vat": total_in,
-            "to_pay": to_pay,
+            "to_pay": to_pay_whole_kr(rows),
             "journal_entry_id": move.id,
             "company_id": self.env.company.id,
         })
@@ -1216,7 +1245,9 @@ class SkvMomsWizard(models.TransientModel):
         html.append(f'<p style="margin-top:12px;">'
                     f'<b>Utgående moms:</b> {fmt(out_vat)} kr<br/>'
                     f'<b>Avdrag ingående moms:</b> –{fmt(in_vat)} kr<br/>'
-                    f'<b style="font-size:1.1em;">Att betala till SKV: {fmt(to_pay)} kr</b>'
+                    f'<b style="font-size:1.1em;">Att betala till SKV: {fmt(to_pay)} kr</b><br/>'
+                    f'<span style="color:#666;">I deklarationen (hela kronor, summan av de '
+                    f'avrundade rutorna): {f"{to_pay_whole_kr(rows):,}".replace(",", " ")} kr</span>'
                     f'</p>')
         self.result_html = "".join(html)
 
